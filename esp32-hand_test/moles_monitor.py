@@ -1,37 +1,39 @@
 #!/usr/bin/env python3
 """
-MOLES — Phase 1: Hand-Wave Test — live terminal monitor
+MOLES / PUPS — live terminal monitor
 
-Reads the host ESP32 over USB serial and prints one line per ranging exchange:
+Reads the host ESP32 over USB serial and prints one line per ranging exchange,
+plus a link-health summary every few seconds. Type  h + Enter  for the legend.
 
-  seq   link  range (delta vs baseline)  first-path  fp_mag (% of baseline)  dev%             CIR shape
-  0412  A->B  1.243 m (+0.002)           fp 745      fp_mag  8120 ( 99%)     2.9% (raw 41.6% sh +1)  ▁▁▂█▆▃▂▂▁▁...
+   seq  link   range  Δrange    fp     SNR    fp%     dev  sigdev   sh      Δφ    Δpath
+ 04283  A->B   0.155  -0.181   742    28dB   106%   43.4%   12.1%   +1   +12.3°   +1.6mm  ██░░░░░░░░░░
 
-  dev% = how different this CIR window is from the empty-link baseline
-         (sum of |magnitude - baseline| over all taps / sum of baseline, in %)
+  dev    = aligned shape change vs the baseline over ALL 56 taps (noise taps included)
+  sigdev = the same, scored only on taps clearly above the noise floor
+  Δφ     = phase change of one probe tap, measured relative to the first path
+  Δpath  = Δφ as echo path-length change (7.8° = 1 mm, channel 5)
 
-         The DW3000's first-path index (fp_idx) jitters by +/-1-2 taps between
-         packets even when nothing moves, sliding the whole window against the
-         baseline and inflating dev. Before scoring, we search a small tap-shift
-         (+/-MAX_SHIFT) and keep the best-matching alignment, so a still scene
-         reads near 0% instead of ~40%. "raw" = dev with no shift correction,
-         "sh" = the shift that best re-aligned this packet. See align.py for the
-         standalone reference version of this search, and replay_dev.py to re-run
-         it over a recorded capture (moles_monitor.py --record).
+  The DW3000's first-path index (fp_idx) jitters by +/-1-2 taps between packets
+  even when nothing moves, sliding the window against the baseline and inflating
+  dev. Before scoring, we search a small tap shift (+/-MAX_SHIFT) and keep the
+  best-matching alignment ("sh"). align.py is the reference/tested version of
+  this search; replay_dev.py re-runs it over a recorded capture (--record).
 
 Usage:
   pip install pyserial
-  python moles_monitor.py                      # auto-detects the port if only one ESP32 is plugged in
   python moles_monitor.py --port /dev/cu.usbserial-0001
-  python moles_monitor.py --record data/run1.csv  # also log every real packet for later replay
-  python moles_monitor.py --list               # show serial ports
+  python moles_monitor.py --record data/run1.csv   # also log every real packet (raw) for replay
+  python moles_monitor.py --probe 2                # phase probe at fp+2 (default: auto)
+  python moles_monitor.py --list                   # show serial ports
 
 While running, type a command and press Enter:
   b   re-capture the baseline (keep the link clear for ~3 s)
+  h   show the legend
   q   quit
 """
 
 import argparse
+import cmath
 import math
 import struct
 import sys
@@ -57,9 +59,47 @@ CIR_PRE = 8                           # first path sits at tap 8 of the window
 MAX_SHIFT = 2                         # tap-shift search radius to cancel fp_idx jitter
 LINK_NAMES = {0x01: "A->B", 0x02: "A->C", 0x03: "B->C"}
 
+# ---------------------------------------------------------------- signal constants
+NOISE_TAPS = range(0, 4)              # fp-8 .. fp-5: before the first path, receiver noise only
+SIG_K = 4.0                           # "signal tap" = baseline magnitude > SIG_K x noise rms (~12 dB)
+PROBE_SEARCH = range(CIR_PRE + 1, CIR_PRE + 7)   # auto probe: strongest baseline tap in fp+1..fp+6
+DEG_PER_MM = 360.0 / 46.2             # channel 5: lambda = 46.2 mm -> 7.8 deg per mm of path
+HEADER_EVERY = 40                     # reprint the column header every N live lines
+
 # ---------------------------------------------------------------- display
 BARS = " ▁▂▃▄▅▆▇█"
-RED, YEL, GRN, DIM, BOLD, RST = "\033[31m", "\033[33m", "\033[32m", "\033[2m", "\033[1m", "\033[0m"
+RED, YEL, GRN, CYN, DIM, BOLD, RST = ("\033[31m", "\033[33m", "\033[32m", "\033[36m",
+                                      "\033[2m", "\033[1m", "\033[0m")
+
+# (name, width) — header and rows are built from the same widths so they always line up
+COLS = [("seq", 5), ("link", 4), ("range", 6), ("Δrange", 7), ("fp", 4), ("SNR", 6),
+        ("fp%", 5), ("dev", 6), ("sigdev", 6), ("sh", 3), ("Δφ", 7), ("Δpath", 7)]
+
+LEGEND = f"""{BOLD}LEGEND{RST}  (type h + Enter to show again)
+ {BOLD}seq{RST}     packet number from Mole A. Gaps show as "(+N lost over ESP-NOW)".
+ {BOLD}link{RST}    mole pair, e.g. A->B.
+ {BOLD}range{RST}   SS-TWR distance (m). Absolute value has an uncalibrated offset; use Δrange.
+ {BOLD}Δrange{RST}  range minus baseline (m). A hand BLOCKING the link pushes this UP.
+ {BOLD}fp{RST}      first-path tap index in the chip's 1016-tap CIR.
+ {BOLD}SNR{RST}     first-path strength over the noise floor (taps before the first path), dB.
+         Low SNR = noisy phase and noisy dev. Aim for 20 dB or more.
+ {BOLD}fp%{RST}     first-path strength vs baseline. Blocking drops it well below 100%.
+ {BOLD}dev{RST}     aligned CIR shape change vs baseline over ALL 56 taps (noise taps included).
+ {BOLD}sigdev{RST}  same, scored only on taps clearly above the noise floor. If dev is high but
+         sigdev is low, the "deviation" is mostly noise taps, not a real change.
+ {BOLD}sh{RST}      tap shift used to cancel first-path jitter (+/-{MAX_SHIFT} max).
+ {BOLD}Δφ{RST}      phase change of the probe tap, relative to the first path, vs baseline (deg).
+         This is the kind of signal the FFT will use. Magnitude/dev can't see mm motion;
+         phase can.
+ {BOLD}Δpath{RST}   Δφ as echo path-length change: 7.8° = 1 mm.
+ {BOLD}meter{RST}   dev vs alert threshold (full bar = 2x threshold). Red + DISTURBED = over it.
+ {BOLD}shape{RST}   CIR magnitude across the window, scaled to the baseline peak.
+{BOLD}SUMMARY{RST} (every few seconds, per link)
+ pkt/s   received rate (expect 10).  miss% = Mole B didn't answer.  lost% = ESP-NOW loss.
+ φσ      spread of Δφ over the summary period. On a STILL scene this is the phase noise
+         the FFT will see: ≤5° excellent, ≤15° usable, ≤30° marginal, >30° not FFT-ready.
+         During motion φσ is large by design.
+"""
 
 
 def sparkline(mags, scale):
@@ -75,6 +115,39 @@ def sparkline(mags, scale):
 def meter(pct, thresh, width=12):
     filled = int(min(pct / max(thresh * 2, 1e-9), 1.0) * width)
     return "█" * filled + "░" * (width - filled)
+
+
+def header_line():
+    return DIM + "  ".join(f"{n:>{w}}" for n, w in COLS) + "  alert" + RST
+
+
+def row(fields):
+    return "  ".join(f"{v:>{w}}" for v, (_, w) in zip(fields, COLS))
+
+
+def wrap180(deg):
+    return (deg + 180.0) % 360.0 - 180.0
+
+
+def circ_mean_deg(angles):
+    z = sum(cmath.exp(1j * math.radians(a)) for a in angles)
+    return math.degrees(cmath.phase(z)) if abs(z) > 0 else 0.0
+
+
+def circ_std_deg(angles):
+    if not angles:
+        return float("nan")
+    R = abs(sum(cmath.exp(1j * math.radians(a)) for a in angles)) / len(angles)
+    return math.degrees(math.sqrt(-2.0 * math.log(max(min(R, 1.0), 1e-12))))
+
+
+def fp_mag_at(mags, s):
+    """Strongest tap around the first path AFTER applying shift s (fp-1 .. fp+3)."""
+    return max(mags[j] for j in range(CIR_PRE - 1 + s, CIR_PRE + 4 + s) if 0 <= j < TAPS)
+
+
+def noise_rms(mags):
+    return math.sqrt(sum(mags[t] ** 2 for t in NOISE_TAPS) / len(NOISE_TAPS))
 
 
 # ---------------------------------------------------------------- serial framing
@@ -116,21 +189,31 @@ class FrameReader:
 
 # ---------------------------------------------------------------- per-link state
 class Link:
-    def __init__(self, n_base, thresh_override, max_shift=MAX_SHIFT):
+    def __init__(self, n_base, thresh_override, max_shift=MAX_SHIFT, probe_offset=None):
         self.n_base = n_base
         self.thresh_override = thresh_override
         self.max_shift = max_shift
+        self.probe_offset = probe_offset
         self.reset()
 
     def reset(self):
-        self.base_samples = []   # list of (mags, range, fp_mag)
+        self.base_samples = []   # list of (mags, range, fp_mag, cplx)
         self.base = None         # per-tap mean magnitude (drift-aligned)
         self.base_range = None
         self.base_fpmag = None
         self.thresh = None
+        self.sig_mask = None     # taps clearly above the noise floor
+        self.probe = None        # probe tap (window index) for phase
+        self.base_phase = None   # probe phase rel. to first path, baseline mean (deg)
         self.last_seq = None
         self.lost = 0
         self.miss_streak = 0
+        self.reset_period()
+
+    def reset_period(self):
+        self.p_start = time.time()
+        self.p_ok = self.p_miss = self.p_lost = 0
+        self.p_snr, self.p_dev, self.p_sdev, self.p_dphi = [], [], [], []
 
     @staticmethod
     def dev(mags, base):
@@ -144,9 +227,8 @@ class Link:
 
         A shift s compares mags[t+s] against base[t]; taps that fall off either
         end for that shift are dropped (not zero-padded), so each shift is
-        scored only on its overlap. Cancels the +/-1-2 fp_idx jitter that would
-        otherwise slide the whole window against the baseline. Returns
-        (best_dev, best_shift); ties keep the smaller |shift| (0 tried first).
+        scored only on its overlap. Returns (best_dev, best_shift); ties keep
+        the smaller |shift| (0 tried first).
 
         Mirrors align.aligned_dev — kept dependency-free (no numpy) so the live
         monitor stays lightweight; align.py is the unit-tested reference.
@@ -165,8 +247,28 @@ class Link:
                 best_dev, best_shift = d, s
         return best_dev, best_shift
 
-    def add_baseline(self, mags, rng, fpmag):
-        self.base_samples.append((mags, rng, fpmag))
+    def sig_dev(self, mags, s):
+        """dev at shift s, scored only on signal taps (baseline above the noise floor)."""
+        num = den = 0.0
+        for t in range(TAPS):
+            j = t + s
+            if self.sig_mask[t] and 0 <= j < TAPS:
+                num += abs(mags[j] - self.base[t])
+                den += self.base[t]
+        return 100.0 * num / den if den > 0 else float("nan")
+
+    def probe_phase(self, cplx, s):
+        """Probe-tap phase relative to the first-path tap (deg), with shift s applied."""
+        fp_j, p_j = CIR_PRE + s, self.probe + s
+        if not (0 <= fp_j < TAPS and 0 <= p_j < TAPS):
+            return None
+        h_fp, h_p = cplx[fp_j], cplx[p_j]
+        if abs(h_fp) == 0 or abs(h_p) == 0:
+            return None
+        return math.degrees(cmath.phase(h_p * h_fp.conjugate()))
+
+    def add_baseline(self, mags, rng, fpmag, cplx):
+        self.base_samples.append((mags, rng, fpmag, cplx))
         if len(self.base_samples) < self.n_base:
             return False
         n = len(self.base_samples)
@@ -177,7 +279,6 @@ class Link:
 
         # Pass 2: shift each sample onto that reference before averaging, so the
         # first-path peak stays sharp instead of being smeared by fp_idx jitter.
-        # Per-tap counts differ at the edges (dropped taps), so divide per tap.
         sums = [0.0] * TAPS
         counts = [0] * TAPS
         for w in windows:
@@ -192,17 +293,66 @@ class Link:
         self.base_range = sum(s[1] for s in self.base_samples) / n
         self.base_fpmag = sum(s[2] for s in self.base_samples) / n
 
-        # Noise floor measured the SAME way live packets are scored (aligned),
-        # so the threshold reflects real residual jitter, not the fp_idx drift.
+        # Noise floor from the pre-first-path taps; signal taps sit clearly above it.
+        self.base_noise = math.sqrt(sum(noise_rms(w) ** 2 for w in windows) / n)
+        self.base_snr = 20 * math.log10(max(self.base_fpmag, 1e-9) / max(self.base_noise, 1e-9))
+        self.sig_mask = [self.base[t] > SIG_K * self.base_noise for t in range(TAPS)]
+
+        # Phase probe: user offset, or the strongest baseline tap just after the first path.
+        if self.probe_offset is not None:
+            self.probe = CIR_PRE + self.probe_offset
+        else:
+            self.probe = max(PROBE_SEARCH, key=lambda t: self.base[t])
+        self.probe_snr = 20 * math.log10(max(self.base[self.probe], 1e-9) / max(self.base_noise, 1e-9))
+
+        # Noise measured the SAME way live packets are scored (aligned).
+        shifts = [self.aligned_dev(w, self.base, self.max_shift)[1] for w in windows]
+        self.base_fpmag = sum(fp_mag_at(w, s) for w, s in zip(windows, shifts)) / n
+        self.base_snr = 20 * math.log10(max(self.base_fpmag, 1e-9) / max(self.base_noise, 1e-9))
         devs = [self.aligned_dev(w, self.base, self.max_shift)[0] for w in windows]
         self.noise_avg = sum(devs) / n
         self.noise_max = max(devs)
-        # For comparison / the judges: the same baseline scored with NO alignment.
         raw = [self.dev(w, self.base) for w in windows]
         self.noise_avg_raw = sum(raw) / n
         self.noise_max_raw = max(raw)
+        sdevs = [self.sig_dev(w, s) for w, s in zip(windows, shifts)]
+        self.noise_sig_avg = sum(sdevs) / n
+
+        phases = [self.probe_phase(smp[3], s) for smp, s in zip(self.base_samples, shifts)]
+        phases = [p for p in phases if p is not None]
+        self.base_phase = circ_mean_deg(phases) if phases else 0.0
+        self.base_phase_std = circ_std_deg([wrap180(p - self.base_phase) for p in phases])
+
         self.thresh = self.thresh_override or max(2.0 * self.noise_max, 5.0)
         return True
+
+
+def fft_verdict(phi_std):
+    if math.isnan(phi_std):
+        return "n/a", DIM
+    if phi_std <= 5:
+        return "excellent", GRN
+    if phi_std <= 15:
+        return "usable", GRN
+    if phi_std <= 30:
+        return "marginal", YEL
+    return "not FFT-ready", RED
+
+
+def print_summary(lk, name):
+    dt = max(time.time() - lk.p_start, 1e-9)
+    tried = lk.p_ok + lk.p_miss
+    rate = tried / dt
+    miss = 100.0 * lk.p_miss / tried if tried else 0.0
+    lost = 100.0 * lk.p_lost / (tried + lk.p_lost) if (tried + lk.p_lost) else 0.0
+    avg = lambda xs: sum(xs) / len(xs) if xs else float("nan")
+    phi_std = circ_std_deg(lk.p_dphi)
+    verdict, vcol = fft_verdict(phi_std)
+    print(f"{CYN}── {name} {dt:4.1f}s │ {rate:4.1f} pkt/s  miss {miss:3.0f}%  lost {lost:3.0f}%  "
+          f"SNR {avg(lk.p_snr):4.1f} dB  dev {avg(lk.p_dev):5.1f}%  sigdev {avg(lk.p_sdev):5.1f}%  "
+          f"φσ {phi_std:5.1f}° ({phi_std / DEG_PER_MM:4.2f} mm){RST}  "
+          f"{vcol}phase: {verdict}{RST} {DIM}(if scene is still){RST}")
+    lk.reset_period()
 
 
 # ---------------------------------------------------------------- helpers
@@ -239,18 +389,25 @@ def stdin_commands(state):
             return
         if cmd == "b":
             state["rebase"] = True
+        if cmd == "h":
+            state["legend"] = True
 
 
 # ---------------------------------------------------------------- main
 def main():
-    ap = argparse.ArgumentParser(description="MOLES phase 1 hand-wave monitor")
+    ap = argparse.ArgumentParser(description="MOLES / PUPS live monitor")
     ap.add_argument("--port", help="serial port of the HOST ESP32")
     ap.add_argument("--baud", type=int, default=921600)
-    ap.add_argument("--baseline", type=int, default=30, help="packets averaged for the baseline (30 = 3 s)")
+    ap.add_argument("--baseline", type=int, default=100, help="packets averaged for the baseline (100 = 10 s)")
     ap.add_argument("--thresh", type=float, default=None, help="alert threshold in dev%% (default: auto)")
     ap.add_argument("--max-shift", type=int, default=MAX_SHIFT,
                     help="tap-shift search radius to cancel fp_idx jitter (default 2; 0 = off)")
+    ap.add_argument("--probe", type=int, default=None,
+                    help="phase probe tap as an offset after the first path (default: auto, fp+1..fp+6)")
+    ap.add_argument("--summary", type=float, default=5.0,
+                    help="seconds between link-health summaries (0 = off)")
     ap.add_argument("--no-shape", action="store_true", help="hide the CIR sparkline")
+    ap.add_argument("--no-legend", action="store_true", help="don't print the legend at startup")
     ap.add_argument("--record", metavar="FILE",
                     help="log every real mole packet to FILE as CSV for replay_dev.py")
     ap.add_argument("--list", action="store_true", help="list serial ports and exit")
@@ -269,22 +426,25 @@ def main():
 
     rec = None
     if args.record:
-        rec = open(args.record, "w")    # one capture per file, CSV (matches data/*.csv evidence)
+        rec = open(args.record, "w")    # raw packets only, never processed values
         rec.write("seq,link_id,range_m,fp_idx,"
                   + ",".join(f"i{k}" for k in range(TAPS)) + ","
                   + ",".join(f"q{k}" for k in range(TAPS)) + "\n")
         print(f"{DIM}recording real packets to {args.record} (CSV){RST}")
 
-    print(f"{BOLD}MOLES phase 1 — hand-wave monitor{RST}   port={port} baud={args.baud}")
-    print(f"{DIM}commands: b + Enter = re-capture baseline, q + Enter = quit{RST}\n")
+    print(f"{BOLD}MOLES / PUPS — live monitor{RST}   port={port} baud={args.baud}")
+    print(f"{DIM}commands: b = re-capture baseline, h = legend, q = quit (then Enter){RST}\n")
+    if not args.no_legend:
+        print(LEGEND)
 
-    state = {"quit": False, "rebase": False}
+    state = {"quit": False, "rebase": False, "legend": False}
     threading.Thread(target=stdin_commands, args=(state,), daemon=True).start()
 
     reader = FrameReader()
     links = {}
     first_status = True
     last_pkt_time = time.time()
+    live_lines = 0
 
     try:
         while not state["quit"]:
@@ -294,6 +454,10 @@ def main():
                 for lk in links.values():
                     lk.reset()
                 print(f"\n{YEL}re-capturing baseline — keep the link clear{RST}")
+            if state["legend"]:
+                state["legend"] = False
+                print("\n" + LEGEND)
+                live_lines = 0
 
             for ftype, payload in reader.feed(data):
 
@@ -319,12 +483,12 @@ def main():
                 if magic != MAGIC:
                     continue
                 ci, cq = f[5:5 + TAPS], f[5 + TAPS:5 + 2 * TAPS]
-                if rec is not None:                 # log the real packet as CSV for replay
+                if rec is not None:                 # log the raw packet as CSV for replay
                     rec.write(f"{seq},{link_id},{rng!r},{fp_idx},"
                               + ",".join(map(str, ci)) + ","
                               + ",".join(map(str, cq)) + "\n")
                 name = LINK_NAMES.get(link_id, f"L{link_id:02X}")
-                lk = links.setdefault(link_id, Link(args.baseline, args.thresh, args.max_shift))
+                lk = links.setdefault(link_id, Link(args.baseline, args.thresh, args.max_shift, args.probe))
 
                 # ESP-NOW losses show up as seq gaps
                 gap = ""
@@ -332,43 +496,75 @@ def main():
                     skipped = (seq - lk.last_seq - 1) & 0xFFFF
                     if 0 < skipped < 1000:
                         lk.lost += skipped
+                        lk.p_lost += skipped
                         gap = f"  {DIM}(+{skipped} lost over ESP-NOW){RST}"
                 lk.last_seq = seq
+
+                summary_due = (lk.base is not None and args.summary > 0
+                               and time.time() - lk.p_start >= args.summary)
 
                 # failed UWB exchange: Mole B's response never arrived
                 if fp_idx == 0xFFFF or math.isnan(rng):
                     lk.miss_streak += 1
+                    lk.p_miss += 1
                     print(f"{RED}{seq:05d}  {name}  ---- no response from responder "
                           f"(miss x{lk.miss_streak}) — link blocked or B not running ----{RST}{gap}")
+                    if summary_due:
+                        print_summary(lk, name)
                     continue
                 lk.miss_streak = 0
 
-                mags = [math.hypot(i, q) for i, q in zip(ci, cq)]
-                fpmag = max(mags[CIR_PRE:CIR_PRE + 4])     # strongest tap at the first path
+                cplx = [complex(i, q) for i, q in zip(ci, cq)]
+                mags = [abs(z) for z in cplx]
+                fpmag = fp_mag_at(mags, 0)       # provisional; baseline recomputes it aligned
 
                 # ---------- baseline capture
                 if lk.base is None:
-                    done = lk.add_baseline(mags, rng, fpmag)
+                    done = lk.add_baseline(mags, rng, fpmag, cplx)
                     n = len(lk.base_samples)
                     if not done:
                         if n == 1 or n % 10 == 0:
                             print(f"{DIM}{seq:05d}  {name}  capturing baseline {n:2d}/{lk.n_base} — "
                                   f"keep the link clear   range {rng:6.3f} m  fp {fp_idx}{RST}")
                     else:
+                        n_sig = sum(lk.sig_mask)
                         print(f"\n{GRN}{BOLD}baseline locked for {name}:{RST}{GRN} range "
-                              f"{lk.base_range:.3f} m, fp_mag {lk.base_fpmag:.0f}{RST}")
+                              f"{lk.base_range:.3f} m, fp_mag {lk.base_fpmag:.0f}, "
+                              f"SNR {lk.base_snr:.1f} dB{RST}")
                         print(f"{DIM}   noise dev  aligned avg {lk.noise_avg:.1f}% / max "
                               f"{lk.noise_max:.1f}%   (no alignment: avg {lk.noise_avg_raw:.1f}% / "
-                              f"max {lk.noise_max_raw:.1f}%){RST}")
+                              f"max {lk.noise_max_raw:.1f}%)   signal taps only: avg "
+                              f"{lk.noise_sig_avg:.1f}% over {n_sig} taps{RST}")
+                        print(f"{DIM}   phase probe fp+{lk.probe - CIR_PRE} (SNR {lk.probe_snr:.1f} dB), "
+                              f"baseline phase spread {lk.base_phase_std:.1f}° "
+                              f"({lk.base_phase_std / DEG_PER_MM:.2f} mm){RST}")
+                        if lk.probe_snr < 12:
+                            print(f"{YEL}   probe tap is near the noise floor — its phase will be "
+                                  f"unreliable (try --probe or move the moles closer){RST}")
                         print(f"{GRN}   -> alert at dev > {lk.thresh:.1f}%   "
                               f"(fp_idx shift search +/-{lk.max_shift} taps){RST}\n")
+                        print(header_line())
+                        live_lines = 0
+                        lk.reset_period()
                     continue
 
                 # ---------- live line
                 d, sh = lk.aligned_dev(mags, lk.base, lk.max_shift)   # drift-corrected
-                d_raw = lk.dev(mags, lk.base)                         # for reference
+                fpmag = fp_mag_at(mags, sh)                           # first path at its aligned spot
+                sd = lk.sig_dev(mags, sh)
                 drange = rng - lk.base_range
                 fp_pct = 100.0 * fpmag / (lk.base_fpmag or 1.0)
+                snr = 20 * math.log10(max(fpmag, 1e-9) / max(noise_rms(mags), 1e-9))
+                ph = lk.probe_phase(cplx, sh)
+                dphi = wrap180(ph - lk.base_phase) if ph is not None else float("nan")
+
+                lk.p_ok += 1
+                lk.p_snr.append(snr)
+                lk.p_dev.append(d)
+                if not math.isnan(sd):
+                    lk.p_sdev.append(sd)
+                if ph is not None:
+                    lk.p_dphi.append(dphi)
 
                 if d > lk.thresh:
                     color, flag = RED, "  <<< DISTURBED"
@@ -377,11 +573,18 @@ def main():
                 else:
                     color, flag = "", ""
 
+                if live_lines and live_lines % HEADER_EVERY == 0:
+                    print(header_line())
+                live_lines += 1
+
+                fields = [f"{seq:05d}", name, f"{rng:6.3f}", f"{drange:+7.3f}", f"{fp_idx:4d}",
+                          f"{snr:4.0f}dB", f"{fp_pct:4.0f}%", f"{d:5.1f}%", f"{sd:5.1f}%",
+                          f"{sh:+d}", f"{dphi:+6.1f}°", f"{dphi / DEG_PER_MM:+5.1f}mm"]
                 shape = "" if args.no_shape else "  " + sparkline(mags, max(lk.base))
-                print(f"{color}{seq:05d}  {name}  {rng:6.3f} m ({drange:+.3f})  fp {fp_idx:4d}  "
-                      f"fp_mag {fpmag:6.0f} ({fp_pct:4.0f}%)  dev {d:5.1f}% {meter(d, lk.thresh)}  "
-                      f"{DIM}(raw {d_raw:4.1f}% sh {sh:+d}){RST}{color}"
-                      f"{flag}{RST}{gap}{shape}")
+                print(f"{color}{row(fields)}  {meter(d, lk.thresh)}{flag}{RST}{gap}{shape}")
+
+                if summary_due:
+                    print_summary(lk, name)
 
     except KeyboardInterrupt:
         pass
