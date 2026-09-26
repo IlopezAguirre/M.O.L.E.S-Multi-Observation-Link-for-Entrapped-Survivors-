@@ -9,7 +9,6 @@
 </head>
 <body>
 
-<!-- Lucide-style icons, drawn at 16px and 20px -->
 <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
   <symbol id="i-activity" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></symbol>
   <symbol id="i-zap" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></symbol>
@@ -28,7 +27,6 @@
 </svg>
 
 <div class="shell">
-  <!-- content -->
   <div class="content">
     <header class="header">
       <div class="seg" id="seg-runs" role="group" aria-label="Simulator run">
@@ -56,17 +54,17 @@
       <div class="grid12">
         <section class="card span8" aria-labelledby="mesh-t">
           <div class="card-h">
-            <div><h3 id="mesh-t">Mesh</h3><p>Six directed links between three pods</p></div>
+            <div><h3 id="mesh-t">Mesh</h3><p id="mesh-sub">Six directed links between three pods</p></div>
             <span class="card-side" id="mesh-hits">0 hits</span>
           </div>
           <div class="card-b">
             <div class="mesh-wrap" id="mesh-wrap">
               <div id="pods-layer" class="pods-layer"></div>
-              <svg id="mesh" viewBox="0 0 600 420" role="img" aria-label="Six directed UWB links between three pods"></svg>
+              <svg id="mesh" viewBox="0 0 600 420" role="img" aria-label="UWB links between three pods"></svg>
             </div>
             <p class="src-line" id="src-line">–</p>
             <ul id="pairs" class="rowlist pairs" aria-label="Pair checks"></ul>
-            <p class="hint">A red link is above the hit threshold. The dot is an <b>estimate</b> of where a periodic signal comes from, fitted to how strongly each pair reacted. Click a link to show its FFT. <b>Corroborated</b> means both directions agree, it held for 30 s, and it beats the empty baseline. It does not confirm a person.</p>
+            <p class="hint">A red link is above the hit threshold. The dot is an <b>estimate</b> of where a periodic signal comes from, fitted to how strongly each pair reacted. Click a link to show its FFT. <b>Corroborated</b> means the signal agrees (both directions, or another link at the same frequency), it held for 30 s, and it beats the empty baseline. It does not confirm a person.</p>
           </div>
         </section>
 
@@ -86,6 +84,17 @@
             </div>
           </section>
 
+          <section class="card hidden" id="range-card" aria-labelledby="range-t">
+            <div class="card-h">
+              <div><h3 id="range-t">Range</h3><p id="range-desc">–</p></div>
+              <span class="card-side mono" id="range-now">–</span>
+            </div>
+            <div class="card-b">
+              <canvas id="c-range" height="120"></canvas>
+              <p class="hint" id="range-note"></p>
+            </div>
+          </section>
+
           <section class="card log-card" aria-labelledby="log-t">
             <div class="card-h">
               <div><h3 id="log-t">Detection log</h3><p>Newest first</p></div>
@@ -100,7 +109,6 @@
     </main>
   </div>
 
-  <!-- sidebar (right) -->
   <aside class="sidebar" aria-label="Controls">
     <div class="sb-head">
       <div><p class="sb-name">MOLES</p><p class="sb-sub">Rubble mesh</p></div>
@@ -120,19 +128,33 @@
 
           <div id="real-src" class="hidden">
             <label class="field"><span>Baud rate</span><input id="baud" type="number" value="921600" min="1200" step="1"></label>
+            <label class="field"><span>Serial format</span>
+              <select id="serial-fmt"><option value="binary" selected>Binary frames (host_esp32)</option><option value="csv">CSV text lines</option></select>
+            </label>
             <button type="button" class="nav-item" id="btn-serial"><svg class="ic"><use href="#i-radio"/></svg>Connect serial (USB)</button>
 
-            <label class="field"><span>CSV replay speed</span>
+            <label class="field"><span>File replay speed</span>
               <select id="csv-speed"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10" selected>10×</option></select>
             </label>
-            <button type="button" class="nav-item" id="btn-csv"><svg class="ic"><use href="#i-upload"/></svg>Load CSV file…</button>
-            <input type="file" id="csv-file" class="hidden" accept=".csv,.txt,.log,text/csv,text/plain" aria-label="CSV file">
+            <label class="field"><span>Poll rate, Hz (times a binary file)</span><input id="poll-hz" type="number" value="10" min="1" max="100" step="1"></label>
+            <button type="button" class="nav-item" id="btn-csv"><svg class="ic"><use href="#i-upload"/></svg>Load capture file…</button>
+            <input type="file" id="csv-file" class="hidden" accept=".bin,.dat,.raw,.csv,.txt,.log,application/octet-stream,text/csv,text/plain" aria-label="CSV file">
 
             <label class="field"><span>WebSocket URL</span><input id="ws-url" type="text" placeholder="ws://localhost:8000/ws" spellcheck="false" autocomplete="off"></label>
             <button type="button" class="nav-item" id="btn-ws"><svg class="ic"><use href="#i-plug"/></svg>Connect WebSocket</button>
 
             <button type="button" class="nav-item hidden" id="btn-disc"><svg class="ic"><use href="#i-x"/></svg>Disconnect</button>
             <p class="nav-note" id="src-status">No source. Connect serial, load a CSV, or turn the simulator on.</p>
+
+            <p class="pod-h">Signal</p>
+            <div class="field-row">
+              <span>Measure</span>
+              <div class="seg" id="seg-signal" role="group" aria-label="Signal">
+                <button type="button" class="seg-btn active" data-sig="phase">Phase</button>
+                <button type="button" class="seg-btn" data-sig="magnitude">Magnitude</button>
+              </div>
+            </div>
+            <label class="check"><input type="checkbox" id="opt-align" checked> Align first path (±2 taps)</label>
 
             <p class="pod-h">Pod positions in metres (optional)</p>
             <label class="field"><span>Pod A · x, y</span><input id="pod-a" type="text" placeholder="0, 0" spellcheck="false" autocomplete="off"></label>
@@ -198,6 +220,7 @@
 </div>
 
 <script src="sim.js"></script>
+<script src="frames.js"></script>
 <script src="pipeline.js"></script>
 <script src="charts.js"></script>
 <script src="app.js"></script>

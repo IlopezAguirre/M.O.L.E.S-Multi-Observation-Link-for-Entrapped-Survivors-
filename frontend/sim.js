@@ -1,14 +1,11 @@
-// Synthetic snapshot source. Stands in for the backend until real data exists.
-// It emits the same snapshot shape documented in README.md, so app.js cannot
-// tell the difference. Thresholds tuned against this data are placeholders.
+// synthetic snapshots for running without hardware
 (function () {
   const PODS = ['A', 'B', 'C'];
   const LINKS = [];
   PODS.forEach(tx => PODS.forEach(rx => { if (tx !== rx) LINKS.push(tx + '>' + rx); }));
 
-  // Pod positions in metres (x right, y up). A real deployment supplies its own.
   const POD_POS = { A: [0, 0], B: [6, 0], C: [3, 5.2] };
-  const SIGMA = 1.6;           // how far from a link the rig still disturbs it
+  const SIGMA = 1.6;
 
   function distToSeg(p, a, b) {
     const abx = b[0] - a[0], aby = b[1] - a[1];
@@ -16,10 +13,10 @@
     return Math.hypot(p[0] - (a[0] + t * abx), p[1] - (a[1] + t * aby));
   }
 
-  const FS = 10;               // samples per second, per link
+  const FS = 10;
   const WINDOW_S = 30;
-  const N = FS * WINDOW_S;     // 300
-  const N_BINS = 31;           // bins 0..30 -> 0..1 Hz at 1/30 Hz per bin
+  const N = FS * WINDOW_S;
+  const N_BINS = 31;
   const BAND = [0.1, 0.5];
   const SNAP_MS = 500;
 
@@ -35,7 +32,6 @@
     HANN[i] = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1));
   }
 
-  // Mean-removed, Hann-windowed DFT magnitudes for bins 0..N_BINS-1.
   function spectrum(x) {
     const mean = x.reduce((a, b) => a + b, 0) / x.length;
     const y = x.map((v, i) => (v - mean) * HANN[i]);
@@ -80,13 +76,12 @@
         loss: 0.01 + Math.random() * 0.03,
         drift: Math.random() * Math.PI * 2,
         fan: Math.random() * Math.PI * 2,
-        buf: [],             // number | null
+        buf: [],
         last: 0,
         i
       };
     });
 
-    // A link is disturbed in proportion to how close the rig is to its path.
     const ampFor = L => 0.03 + 0.9 * Math.exp(-Math.pow(distToSeg(p.source, L.tx, L.rx) / SIGMA, 2));
 
     let t = 0, timer = null;
@@ -94,7 +89,6 @@
     function sample(L) {
       const drift = 0.25 * Math.sin(2 * Math.PI * 0.012 * t + L.drift);
       const breath = p.breathing ? ampFor(L) * Math.sin(2 * Math.PI * p.rate * t + L.phase) : 0;
-      // a fan-like source: periodic, hits every link about equally, and is not a person
       const fan = p.ambient ? 0.35 * Math.sin(2 * Math.PI * 0.2 * t + L.fan) : 0;
       return 3 + drift + breath + fan + L.noise * gauss();
     }
@@ -117,7 +111,6 @@
       LINKS.forEach(name => {
         const L = links[name];
         fill = Math.min(fill, L.buf.length / N);
-        // Gaps are bridged with the previous value for the FFT only.
         let prev = L.buf.find(v => v !== null) || 0;
         const filled = L.buf.map(v => { if (v === null) return prev; prev = v; return v; });
         while (filled.length < N) filled.unshift(filled[0] || 0);
@@ -149,14 +142,12 @@
 
     return {
       params: p,
-      // Clear every buffer and refill with the current params, so a run
-      // change shows up immediately instead of after a full 30 s window.
       reset() {
         LINKS.forEach(name => { links[name].buf = []; });
         for (let i = 0; i < N; i++) step();
       },
       start(cb) {
-        for (let i = 0; i < N; i++) step();   // warm start: window already full
+        for (let i = 0; i < N; i++) step();
         cb(snapshot());
         timer = setInterval(() => {
           for (let i = 0; i < FS * SNAP_MS / 1000; i++) step();
