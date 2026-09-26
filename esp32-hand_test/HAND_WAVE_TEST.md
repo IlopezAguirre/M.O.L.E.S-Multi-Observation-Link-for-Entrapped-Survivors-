@@ -32,7 +32,7 @@ One exchange (every 100 ms):
 | `mole_a_tx/mole_a_tx.ino` | Mole A ESP32 | Initiator: ranging, CIR read, ESP-NOW sender |
 | `mole_b_rx/mole_b_rx.ino` | Mole B ESP32 | Responder: timestamps poll, sends response |
 | `host_esp32/host_esp32.ino` | Host ESP32 (on laptop USB) | ESP-NOW receiver → framed binary over USB |
-| `moles_monitor.py` | Laptop | Decodes frames, baselines the CIR, prints live lines |
+| `moles_monitor.py` | Laptop | Decodes frames, baselines the CIR, prints live lines, runs the PUPS pipeline and plots a 30 s FFT (single file: alignment, replay, self-test) |
 
 ## 3. Packet (ESP-NOW, Mole A → Host)
 

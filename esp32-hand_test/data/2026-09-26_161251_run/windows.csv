@@ -1,0 +1,4 @@
+link,window,t0_s,stages,victim_tap,clutter,estimator,peak_hz,per_min,snr_db,amp_mm,valid_frac,filled_frac,spikes,masked,cross_hz,snr_ok,valid_ok,stable,detected
+A->B,0,8.6,gate+align+deadtap+reference+clutter+hampel+detrend,3,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1514,9.08,22.63,7.024,0.983,0.000,5,,nan,True,True,,False
+A->B,1,38.6,gate+align+deadtap+reference+clutter+hampel+detrend,18,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1221,7.32,24.20,18.696,0.993,0.000,2,,nan,True,True,True,True
+A->B,2,68.6,gate+align+deadtap+reference+clutter+hampel+detrend,32,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1025,6.15,26.23,18.317,0.997,0.000,1,,nan,True,True,True,True
