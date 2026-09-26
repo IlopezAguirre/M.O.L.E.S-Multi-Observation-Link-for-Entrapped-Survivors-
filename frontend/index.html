@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en" class="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>MOLES Dashboard</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<!-- Lucide-style icons, drawn at 16px and 20px -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="i-activity" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></symbol>
+  <symbol id="i-zap" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></symbol>
+  <symbol id="i-gauge" viewBox="0 0 24 24"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></symbol>
+  <symbol id="i-radio" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+  <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+</svg>
+
+<div class="shell">
+  <!-- content -->
+  <div class="content">
+    <header class="header">
+      <div class="seg" id="seg-runs" role="group" aria-label="Simulator run">
+        <button type="button" class="seg-btn" data-run="0">Baseline</button>
+        <button type="button" class="seg-btn active" data-run="1">Rig on</button>
+        <button type="button" class="seg-btn" data-run="2">Control</button>
+      </div>
+      <div class="header-right">
+        <span class="pill"><span class="dotc" id="conn-dot"></span><span id="source-text">starting</span></span>
+        <span class="clock" id="clock">00:00:00</span>
+        <button type="button" class="btn-primary" id="btn-stop" aria-pressed="false" title="Pause or resume the live view">
+          <svg class="ic"><use href="#i-pause"/></svg><span id="stop-label">Pause</span>
+        </button>
+      </div>
+    </header>
+
+    <main class="main">
+      <div class="page-head">
+        <h1>Rhythm detection</h1>
+        <p id="banner" class="banner idle" role="status" aria-live="polite">Listening · no periodic signal on any link</p>
+      </div>
+
+      <div class="kpis" id="kpis"></div>
+
+      <div class="grid12">
+        <section class="card span8" aria-labelledby="mesh-t">
+          <div class="card-h">
+            <div><h3 id="mesh-t">Mesh</h3><p>Six directed links between three pods</p></div>
+            <span class="card-side" id="mesh-hits">0 hits</span>
+          </div>
+          <div class="card-b">
+            <svg id="mesh" viewBox="0 0 600 420" role="img" aria-label="Three pods and six directed UWB links"></svg>
+            <p class="src-line" id="src-line">–</p>
+            <ul id="pairs" class="rowlist pairs" aria-label="Pair checks"></ul>
+            <p class="hint">A red link is above the hit threshold. The dot is an <b>estimate</b> of where a periodic signal comes from, fitted to how strongly each pair reacted. Click a link to show its FFT. <b>Corroborated</b> means both directions agree, it held for 30 s, and it beats the empty baseline. It does not confirm a person.</p>
+          </div>
+        </section>
+
+        <div class="span4 stack">
+          <section class="card" aria-labelledby="fft-t">
+            <div class="card-h">
+              <div><h3 id="fft-t">FFT bins</h3><p id="fft-desc">–</p></div>
+            </div>
+            <div class="card-b">
+              <canvas id="c-bars" height="180"></canvas>
+              <div class="legend">
+                <span><i class="lg lg-peak"></i>peak</span>
+                <span><i class="lg lg-band"></i>in band</span>
+                <span><i class="lg lg-base"></i>baseline</span>
+              </div>
+              <pre class="json" id="json"></pre>
+            </div>
+          </section>
+
+          <section class="card" aria-labelledby="log-t">
+            <div class="card-h">
+              <div><h3 id="log-t">Detection log</h3><p>Newest first</p></div>
+            </div>
+            <div class="card-b flush">
+              <ol id="log" class="log"><li class="empty">No detections yet.</li></ol>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- sidebar (right) -->
+  <aside class="sidebar" aria-label="Controls">
+    <div class="sb-head">
+      <div><p class="sb-name">MOLES</p><p class="sb-sub">Rubble mesh</p></div>
+    </div>
+
+    <nav class="sb-nav">
+      <section class="nav-section">
+        <button type="button" class="nav-label" aria-expanded="true">Controls<svg class="ic ic-12 chev"><use href="#i-chevron"/></svg></button>
+        <div class="nav-body">
+          <button type="button" class="nav-item" id="btn-reset"><svg class="ic"><use href="#i-reset"/></svg>Reset log</button>
+          <button type="button" class="nav-item" id="base-cap"><svg class="ic"><use href="#i-layers"/></svg>Capture baseline</button>
+          <button type="button" class="nav-item" id="base-clear"><svg class="ic"><use href="#i-x"/></svg>Clear baseline</button>
+          <p class="nav-note" id="base-status">No baseline. Record the site with nobody there, then capture.</p>
+        </div>
+      </section>
+
+      <section class="nav-section">
+        <button type="button" class="nav-label" aria-expanded="true">Nodes<svg class="ic ic-12 chev"><use href="#i-chevron"/></svg></button>
+        <div class="nav-body"><ul id="nodes" class="rowlist"></ul></div>
+      </section>
+
+      <section class="nav-section">
+        <button type="button" class="nav-label" aria-expanded="true">Thresholds<svg class="ic ic-12 chev"><use href="#i-chevron"/></svg></button>
+        <div class="nav-body">
+          <dl class="kvlist">
+            <div><dt>Breathing band</dt><dd id="t-band">–</dd></div>
+            <div><dt>Hit threshold</dt><dd id="thr-val">4.0× bg</dd></div>
+          </dl>
+          <input type="range" id="thr" min="1.5" max="12" step="0.1" value="4" aria-label="Hit threshold">
+          <dl class="kvlist">
+            <div><dt>Sample rate</dt><dd id="t-rate">–</dd></div>
+            <div><dt>Window</dt><dd id="t-win">–</dd></div>
+            <div><dt>Cycle time</dt><dd id="t-cycle">–</dd></div>
+            <div><dt>Persistence</dt><dd id="t-persist">30 s</dd></div>
+            <div><dt>Over baseline</dt><dd id="t-basef">3×</dd></div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="nav-section" id="sim-panel">
+        <button type="button" class="nav-label" aria-expanded="true">Simulator<svg class="ic ic-12 chev"><use href="#i-chevron"/></svg></button>
+        <div class="nav-body">
+          <label class="field"><span>Rig position</span>
+            <select id="sel-pos">
+              <option value="0" selected>Near pod B</option>
+              <option value="1">Center of mesh</option>
+              <option value="2">Near link A–C</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" id="sim-amb"> Ambient 0.2 Hz source, like a fan</label>
+        </div>
+      </section>
+    </nav>
+
+    <div class="sb-foot">
+      <span class="avatar" id="f-av" aria-hidden="true">R2</span>
+      <div class="sb-user"><p id="f-name">RUN_02</p><p id="f-sub">Rig on · 0.2 Hz</p></div>
+    </div>
+  </aside>
+</div>
+
+<script src="sim.js"></script>
+<script src="charts.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
