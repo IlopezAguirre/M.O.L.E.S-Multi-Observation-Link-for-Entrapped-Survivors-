@@ -65,7 +65,8 @@
   // them the layout is a placeholder and positions are only relative.
   const DEFAULT_PODS = { A: [0, 0], B: [6, 0], C: [3, 5.2] };
   const VB = { w: 600, h: 420, margin: 80 };
-  const R = 24, OFF = 9;
+  const R = 30, OFF = 9;
+  const POD_D = 56;                 // pod button diameter, in SVG units
   const NS = 'http://www.w3.org/2000/svg';
   const el = (tag, attrs, parent) => {
     const e = document.createElementNS(NS, tag);
@@ -76,6 +77,7 @@
   const linkEls = {};
   let lay = null;               // { key, scale, toSvg(m) }
   let srcEls = null;
+  const podEls = {};            // pod id -> its button element
 
   function makeLayout(pods) {
     const pts = PODS.map(id => pods[id]);
@@ -105,22 +107,17 @@
       const g = el('g', { class: 'link', tabindex: 0, role: 'button', 'aria-label': 'Link ' + arrow(name) }, svg);
       el('line', { x1: sx, y1: sy, x2: ex, y2: ey, class: 'hit' }, g);
       el('line', { x1: sx, y1: sy, x2: ex, y2: ey }, g);
-      const tipx = ex + ux * 12, tipy = ey + uy * 12;
-      el('polygon', { points: [tipx, tipy, ex + nx * 6, ey + ny * 6, ex - nx * 6, ey - ny * 6].join(',') }, g);
+      const tipx = ex + ux * 10, tipy = ey + uy * 10;
+      el('polygon', { points: [tipx, tipy, ex + nx * 3.5, ey + ny * 3.5, ex - nx * 3.5, ey - ny * 3.5].join(',') }, g);
       g.addEventListener('click', () => select(name));
       g.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(name); } });
       linkEls[name] = g;
     });
-    PODS.forEach(id => {
-      const [x, y] = lay.toSvg(pods[id]);
-      el('circle', { cx: x, cy: y, r: R, class: 'ncirc' }, svg);
-    });
-    // estimated source: drawn above the links and pod circles
+    buildPods();
+    // estimated source: drawn above the links (the pod buttons sit underneath the SVG)
     const g = el('g', { class: 'src', style: 'display:none' }, svg);
     srcEls = {
       g,
-      halo: el('circle', { class: 'halo', r: 10 }, g),
-      pulse: el('circle', { class: 'pulse', r: 8 }, g),
       dot: el('circle', { class: 'sdot', r: 8 }, g),
       label: el('text', { class: 'slabel' }, g),
       truth: el('g', { class: 'truth', style: 'display:none' }, svg)
@@ -128,11 +125,31 @@
     el('line', { x1: -7, y1: 0, x2: 7, y2: 0 }, srcEls.truth);
     el('line', { x1: 0, y1: -7, x2: 0, y2: 7 }, srcEls.truth);
     el('text', { x: -10, y: -8 }, srcEls.truth).textContent = 'rig (sim)';
-    // pod letters go on top so the dot never hides which pod it is near
+  }
+
+  // Pods are HTML buttons laid over the map, because CSS box-shadow does not
+  // apply to SVG shapes. They sit below the SVG so the source dot is never hidden.
+  function buildPods() {
+    const layer = $('pods-layer');
+    layer.innerHTML = PODS.map(id =>
+      '<label class="toggle pod" data-pod="' + id + '">' +
+      '<input type="checkbox" aria-label="Pod ' + id + '"><span class="button"></span><span class="label">' + id + '</span></label>').join('');
+    PODS.forEach(id => { podEls[id] = layer.querySelector('[data-pod="' + id + '"]'); });
+  }
+
+  // Line the buttons up with the SVG's pod positions, whatever size the SVG is drawn at.
+  function placePods() {
+    if (!lay || !state.pods) return;
+    const r = $('mesh').getBoundingClientRect(), wr = $('mesh-wrap').getBoundingClientRect();
+    const s = Math.min(r.width / VB.w, r.height / VB.h);
+    const ox = r.left - wr.left + (r.width - VB.w * s) / 2, oy = r.top - wr.top + (r.height - VB.h * s) / 2;
     PODS.forEach(id => {
-      const [x, y] = lay.toSvg(pods[id]);
-      const t = el('g', { class: 'node' }, svg);
-      el('text', { x, y }, t).textContent = id;
+      const p = podEls[id];
+      if (!p) return;
+      const [x, y] = lay.toSvg(state.pods[id]);
+      p.style.left = (ox + x * s).toFixed(1) + 'px';
+      p.style.top = (oy + y * s).toFixed(1) + 'px';
+      p.style.setProperty('--s', (POD_D * s / 68.8).toFixed(3));      // 68.8px is the button size in the imported design
     });
   }
 
@@ -214,7 +231,6 @@
     srcEls.g.style.display = '';
     srcEls.g.setAttribute('class', 'src ' + (est.confirmed ? 'conf' : 'unconf'));
     srcEls.g.setAttribute('transform', 'translate(' + px + ',' + py + ')');
-    srcEls.halo.setAttribute('r', (est.sigma * lay.scale).toFixed(1));
     srcEls.label.setAttribute('x', 16);
     srcEls.label.setAttribute('y', -12);
     srcEls.label.textContent = est.hz.toFixed(2) + ' Hz';
@@ -437,6 +453,7 @@
 
     renderKpis(s, hot);
     renderNodes(s);
+    placePods();
     renderFft(s);
     renderLog();
   }
@@ -446,6 +463,12 @@
       const mine = LINKS.filter(l => l.split('>').includes(id));
       const loss = mine.reduce((a, l) => a + s.links[l].loss, 0) / mine.length;
       const hot = mine.filter(l => state.latch[l]).length;
+      const pod = podEls[id];
+      if (pod) {                                       // pressed in while any of its links is a hit
+        const input = pod.querySelector('input');
+        input.checked = hot > 0;
+        input.setAttribute('aria-label', 'Pod ' + id + ': ' + hot + ' of ' + mine.length + ' links hit. Show its strongest link.');
+      }
       return '<li><span class="dotc ' + (hot ? 'hot' : 'ok') + '"></span>' +
         '<div><span class="nm">Node ' + id + '</span><span class="sub">loss ' + (loss * 100).toFixed(1) + '%</span></div>' +
         '<span class="end badge ' + (hot ? 'low' : 'fill') + '">' + hot + '/' + mine.length + ' hit</span></li>';
@@ -532,6 +555,14 @@
     });
     $('base-cap').addEventListener('click', captureBaseline);
     $('base-clear').addEventListener('click', () => { state.baseline = null; updateBaselineStatus(); if (state.snap) render(); });
+    $('pods-layer').addEventListener('click', e => {
+      if (e.target.tagName !== 'INPUT') return;
+      e.preventDefault();                                // pressed state comes from the data, not the click
+      const id = e.target.closest('.pod').dataset.pod, s = state.snap;
+      if (!s) return;
+      const strongest = LINKS.filter(l => l.split('>').includes(id)).sort((p, q) => s.links[q].ratio - s.links[p].ratio)[0];
+      select(strongest);
+    });
     $('log').addEventListener('click', e => {
       const li = e.target.closest('li[data-link]');
       if (li) select(li.dataset.link);

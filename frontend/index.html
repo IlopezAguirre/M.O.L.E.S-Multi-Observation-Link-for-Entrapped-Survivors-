@@ -58,7 +58,10 @@
             <span class="card-side" id="mesh-hits">0 hits</span>
           </div>
           <div class="card-b">
-            <svg id="mesh" viewBox="0 0 600 420" role="img" aria-label="Three pods and six directed UWB links"></svg>
+            <div class="mesh-wrap" id="mesh-wrap">
+              <div id="pods-layer" class="pods-layer"></div>
+              <svg id="mesh" viewBox="0 0 600 420" role="img" aria-label="Six directed UWB links between three pods"></svg>
+            </div>
             <p class="src-line" id="src-line">–</p>
             <ul id="pairs" class="rowlist pairs" aria-label="Pair checks"></ul>
             <p class="hint">A red link is above the hit threshold. The dot is an <b>estimate</b> of where a periodic signal comes from, fitted to how strongly each pair reacted. Click a link to show its FFT. <b>Corroborated</b> means both directions agree, it held for 30 s, and it beats the empty baseline. It does not confirm a person.</p>
