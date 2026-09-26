@@ -1,15 +1,11 @@
-// Canvas chart helpers, styled to design.md. No dependencies so the dashboard
-// works offline. Colours come from the CSS tokens, so they follow the theme.
+// canvas charts, no dependencies
 (function () {
   const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  // "oklch(64.6% 0.222 41.116)" -> "oklch(64.6% 0.222 41.116 / 0.2)"
   const withAlpha = (c, a) => c.replace(/\)\s*$/, ' / ' + a + ')');
 
   function setup(canvas) {
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth;
-    // Keep the logical height in data-h: the height attribute becomes the
-    // backing-store size below, and re-reading it would compound every frame.
     if (!canvas.dataset.h) canvas.dataset.h = canvas.getAttribute('height');
     const h = parseInt(canvas.dataset.h, 10);
     canvas.style.height = h + 'px';
@@ -23,9 +19,6 @@
     return { ctx, w, h };
   }
 
-  // FFT as a bar chart, one bar per bin. Horizontal grid only, no axis lines,
-  // muted tick labels. The breathing band sits on a muted backdrop, bins inside
-  // it are chart-3, and the strongest bin is chart-1.
   function drawBars(canvas, spec, meta, overlays, target) {
     const { ctx, w, h } = setup(canvas);
     const pad = { l: 4, r: 4, t: 8, b: 22 };
@@ -55,7 +48,6 @@
       ctx.fillRect(x, y, bwid, bh);
     }
 
-    // target bin marker
     const tk = Math.round(target / meta.bin_hz);
     const tx = pad.l + (tk + 0.5) * bw;
     ctx.setLineDash([3, 3]);
@@ -80,8 +72,6 @@
     for (let k = 0; k < n; k += 5) ctx.fillText(String(k), pad.l + (k + 0.5) * bw, h - 6);
   }
 
-  // KPI sparkline: no axes, no grid, no tooltip. A 2px line in the chart colour
-  // over a vertical gradient that fades from about 20% alpha to nothing.
   function drawSpark(canvas, data, colorVar) {
     const { ctx, w, h } = setup(canvas);
     if (data.length < 2) return;
@@ -94,7 +84,7 @@
       ctx.moveTo(X(0), Y(data[0]));
       for (let i = 1; i < data.length; i++) {
         const mx = (X(i - 1) + X(i)) / 2;
-        ctx.bezierCurveTo(mx, Y(data[i - 1]), mx, Y(data[i]), X(i), Y(data[i]));   // smooth, no dots
+        ctx.bezierCurveTo(mx, Y(data[i - 1]), mx, Y(data[i]), X(i), Y(data[i]));
       }
     };
     const g = ctx.createLinearGradient(0, 0, 0, h);
@@ -106,7 +96,39 @@
     ctx.strokeStyle = c; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.stroke();
   }
 
+  function drawTrace(canvas, data, colorVar, unit) {
+    const { ctx, w, h } = setup(canvas);
+    const vals = data.filter(v => v !== null);
+    if (vals.length < 2) return;
+    const pad = { l: 44, r: 8, t: 10, b: 8 };
+    let lo = Math.min(...vals, 0), hi = Math.max(...vals, 0);
+    if (hi - lo < 1e-9) { hi += 1; lo -= 1; }
+    const m = (hi - lo) * 0.12; lo -= m; hi += m;
+    const X = i => pad.l + (i / (data.length - 1 || 1)) * (w - pad.l - pad.r);
+    const Y = v => pad.t + (1 - (v - lo) / (hi - lo)) * (h - pad.t - pad.b);
+
+    ctx.strokeStyle = css('--border'); ctx.lineWidth = 1;
+    [hi, lo].forEach(v => { const y = Math.round(Y(v)) + 0.5; ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w - pad.r, y); ctx.stroke(); });
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(pad.l, Math.round(Y(0)) + 0.5); ctx.lineTo(w - pad.r, Math.round(Y(0)) + 0.5); ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = css('--muted-foreground'); ctx.font = '11px ' + css('--sans'); ctx.textAlign = 'right';
+    ctx.fillText(hi.toFixed(1) + ' ' + unit, pad.l - 6, Y(hi) + 4);
+    ctx.fillText('0', pad.l - 6, Y(0) + 4);
+    ctx.fillText(lo.toFixed(1), pad.l - 6, Y(lo) + 4);
+
+    ctx.strokeStyle = css(colorVar); ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let pen = false;
+    data.forEach((v, i) => {
+      if (v === null) { pen = false; return; }
+      if (pen) ctx.lineTo(X(i), Y(v)); else { ctx.moveTo(X(i), Y(v)); pen = true; }
+    });
+    ctx.stroke();
+  }
+
   const clear = canvas => { setup(canvas); };
 
-  window.MolesCharts = { drawBars, drawSpark, clear, color: css };
+  window.MolesCharts = { drawBars, drawSpark, drawTrace, clear, color: css };
 })();
