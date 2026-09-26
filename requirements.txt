@@ -1,0 +1,47 @@
+# UWB Rubble Mesh — Python dependencies (laptop side only).
+#
+# Firmware libraries are NOT here. The Makerfabs ESP32 UWB DW3000 Arduino
+# library is installed through the Arduino IDE Library Manager.
+#
+#   python3 -m venv .venv
+#   source .venv/bin/activate        # Windows: .venv\Scripts\activate
+#   pip install -r requirements.txt
+
+
+# --- Reading the host ESP32 -------------------------------------------------
+# Pulls the CSV stream of CIR reports off USB serial.
+pyserial>=3.5
+
+
+# --- Signal processing ------------------------------------------------------
+# numpy: tap arrays, mean removal, FFT
+# scipy: spectrogram, filtering, peak finding
+numpy>=1.26
+scipy>=1.11
+
+
+# --- Log handling -----------------------------------------------------------
+# Splitting the CSV by (tx, rx) link, aligning on seq, marking dropped rounds.
+pandas>=2.1
+
+
+# --- Plots for the judges ---------------------------------------------------
+# Overlaid time plots, FFT zoomed to 0-1 Hz, spectrogram, live dashboard.
+matplotlib>=3.8
+
+
+# --- Config -----------------------------------------------------------------
+# Reads .env so the serial port isn't hardcoded per laptop.
+python-dotenv>=1.0
+
+
+# --- Terminal output --------------------------------------------------------
+# Readable live view while tailing the serial stream during bring-up.
+rich>=13.0
+
+
+# --- Puck enclosure ---------------------------------------------------------
+# Only needed to re-run puck_generator.py. manifold3d is trimesh's
+# boolean engine; without it the threaded lid cuts will fail.
+trimesh>=4.0
+manifold3d>=2.3

@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Secrets and per-machine config. Commit .env.example instead.
+.env
+.env.local
+
+# Arduino / PlatformIO build output
+build/
+.pio/
+*.elf
+*.bin
+*.hex
+
+# Editor / OS
+.vscode/
+.cursor/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Deliberately NOT ignored:
+#   *.stl        teammates need to print without running the generator
+#   data/*.csv   the Phase 2 motor-off / motor-on runs are our evidence
