@@ -106,5 +106,7 @@
     ctx.strokeStyle = c; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.stroke();
   }
 
-  window.MolesCharts = { drawBars, drawSpark, color: css };
+  const clear = canvas => { setup(canvas); };
+
+  window.MolesCharts = { drawBars, drawSpark, clear, color: css };
 })();

@@ -3,17 +3,63 @@
 Static, dependency-free dashboard. No build step, no CDN, works offline.
 
 ```bash
-open frontend/index.html                      # simulator, no hardware needed
-open "frontend/index.html?ws=ws://localhost:8000/ws"   # live backend
+open frontend/index.html                                # simulator on
+cd frontend && python3 -m http.server 8080              # or serve it (Web Serial wants localhost)
+open "frontend/index.html?sim=false"                    # start with the simulator off
+open "frontend/index.html?ws=ws://localhost:8000/ws"    # connect a WebSocket straight away
 ```
 
-Without `?ws=` it runs a built-in simulator that emits the same snapshots a
-backend would. **Thresholds tuned against the simulator are placeholders** until
-real captures exist.
+## Data sources
+
+The **Data source** panel in the sidebar has a **Simulator On / Off** switch (it
+remembers your choice). With it Off, the dashboard takes the host's real CSV
+from any of three places, and everything below the source is identical:
+
+| Source | How | Notes |
+|---|---|---|
+| **USB serial** | *Connect serial* | Web Serial: Chrome or Edge on a computer, opened from `localhost` or `https`. Set the baud to the firmware's (921600). Close the Arduino serial monitor first, since only one program can hold the port. |
+| **CSV file** | *Load CSV file…* | A recorded run, replayed at 1×–10× (data time, so the 30 s window and persistence behave as they did live). |
+| **WebSocket** | *Connect WebSocket* | The server sends either CSV lines (one or many per message) or whole JSON snapshots (see below). Reconnects automatically. |
+
+The CSV is the firmware's contract from `ARCHITECTURE.md`, one line per report:
+
+```
+t_ms, rx_id, tx_id, seq, status, fp_index, I0, Q0, I1, Q1, ... I(N-1), Q(N-1)
+```
+
+`pipeline.js` is a browser port of the laptop pipeline in `ARCHITECTURE.md`:
+split by directed link, align on `seq`, subtract each tap's mean, keep the
+highest-variance taps, 30 s FFT, peak in 0.1–0.5 Hz against the background.
+
+- **Header lines, blank lines and `#` comments are skipped.** A malformed row is
+  counted as rejected, not fatal; the counts show under the source buttons.
+- **`N` (taps per report) is whatever the first row has.** A later row with a
+  different count is rejected, so a firmware and parser mismatch shows up
+  immediately rather than as garbage.
+- **Pod ids:** the three lowest ids seen become A, B, C, so 0–2 and 1–3 both work.
+- **`seq`** is unwrapped across its `uint16` wrap. A missing round is a gap
+  (never shifted), and `status` 1 (timeout) or 2 (error) rows count as gaps. A
+  long dropout or a `seq` that jumps back starts that link over.
+- **Sample rate** is measured from `t_ms`, not assumed (10 Hz per link is the
+  nominal figure); the 30 s window and bin width follow from it.
+- **`fp_index` is read but not used.** Taps are chosen by variance, which is how
+  the open item about the tap offset gets sidestepped for now.
+- **Pod positions** are optional inputs (metres). Without them the layout is a
+  placeholder and the estimated position is labelled relative.
+
+`python3 tools/make_sample_csv.py --seconds 75 > sample.csv` writes a synthetic
+firmware-format CSV (dropped rounds, timeouts, a wrapping `seq`) so the loader
+can be tried without hardware. `--no-rig` makes an empty-pile recording for the
+baseline. It is test data, not a recording.
+
+Everything here is verified against synthetic data only. The serial path has
+been exercised with a stand-in port, not real hardware. **Thresholds tuned
+against the simulator are placeholders** until real captures exist.
 
 ## Snapshot contract
 
-The backend sends one JSON object per message (about 2 per second):
+A WebSocket backend can skip the CSV and send one JSON object per message
+(about 2 per second). This is also what the simulator and `pipeline.js` produce:
 
 ```json
 {

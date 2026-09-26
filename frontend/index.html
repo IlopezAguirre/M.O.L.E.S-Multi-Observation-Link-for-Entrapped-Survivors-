@@ -22,6 +22,8 @@
   <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
   <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></symbol>
   <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></symbol>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></symbol>
+  <symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
 </svg>
 
@@ -84,12 +86,13 @@
             </div>
           </section>
 
-          <section class="card" aria-labelledby="log-t">
+          <section class="card log-card" aria-labelledby="log-t">
             <div class="card-h">
               <div><h3 id="log-t">Detection log</h3><p>Newest first</p></div>
             </div>
             <div class="card-b flush">
               <ol id="log" class="log"><li class="empty">No detections yet.</li></ol>
+              <div class="log-foot" id="log-foot">Waiting for a hit</div>
             </div>
           </section>
         </div>
@@ -104,6 +107,41 @@
     </div>
 
     <nav class="sb-nav">
+      <section class="nav-section" id="src-panel">
+        <button type="button" class="nav-label" aria-expanded="true">Data source<svg class="ic ic-12 chev"><use href="#i-chevron"/></svg></button>
+        <div class="nav-body">
+          <div class="field-row">
+            <span>Simulator</span>
+            <div class="seg" id="seg-sim" role="group" aria-label="Simulator">
+              <button type="button" class="seg-btn active" data-sim="1">On</button>
+              <button type="button" class="seg-btn" data-sim="0">Off</button>
+            </div>
+          </div>
+
+          <div id="real-src" class="hidden">
+            <label class="field"><span>Baud rate</span><input id="baud" type="number" value="921600" min="1200" step="1"></label>
+            <button type="button" class="nav-item" id="btn-serial"><svg class="ic"><use href="#i-radio"/></svg>Connect serial (USB)</button>
+
+            <label class="field"><span>CSV replay speed</span>
+              <select id="csv-speed"><option value="1">1×</option><option value="2">2×</option><option value="5">5×</option><option value="10" selected>10×</option></select>
+            </label>
+            <button type="button" class="nav-item" id="btn-csv"><svg class="ic"><use href="#i-upload"/></svg>Load CSV file…</button>
+            <input type="file" id="csv-file" class="hidden" accept=".csv,.txt,.log,text/csv,text/plain" aria-label="CSV file">
+
+            <label class="field"><span>WebSocket URL</span><input id="ws-url" type="text" placeholder="ws://localhost:8000/ws" spellcheck="false" autocomplete="off"></label>
+            <button type="button" class="nav-item" id="btn-ws"><svg class="ic"><use href="#i-plug"/></svg>Connect WebSocket</button>
+
+            <button type="button" class="nav-item hidden" id="btn-disc"><svg class="ic"><use href="#i-x"/></svg>Disconnect</button>
+            <p class="nav-note" id="src-status">No source. Connect serial, load a CSV, or turn the simulator on.</p>
+
+            <p class="pod-h">Pod positions in metres (optional)</p>
+            <label class="field"><span>Pod A · x, y</span><input id="pod-a" type="text" placeholder="0, 0" spellcheck="false" autocomplete="off"></label>
+            <label class="field"><span>Pod B · x, y</span><input id="pod-b" type="text" placeholder="6, 0" spellcheck="false" autocomplete="off"></label>
+            <label class="field"><span>Pod C · x, y</span><input id="pod-c" type="text" placeholder="3, 5.2" spellcheck="false" autocomplete="off"></label>
+          </div>
+        </div>
+      </section>
+
       <section class="nav-section">
         <button type="button" class="nav-label" aria-expanded="true">Controls<svg class="ic ic-12 chev"><use href="#i-chevron"/></svg></button>
         <div class="nav-body">
@@ -160,6 +198,7 @@
 </div>
 
 <script src="sim.js"></script>
+<script src="pipeline.js"></script>
 <script src="charts.js"></script>
 <script src="app.js"></script>
 </body>

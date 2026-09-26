@@ -44,7 +44,9 @@
     series: { hot: [], hits: [], peak: [], loss: [] },   // KPI sparklines, one point per snapshot
     pods: null,
     podsKnown: false,
-    sim: null
+    sim: null,
+    source: 'none',          // sim | serial | csv | ws | none
+    srcLabel: ''
   };
   const resetLatch = () => {
     LINKS.forEach(l => { state.latch[l] = false; state.history[l] = []; });
@@ -119,12 +121,9 @@
     srcEls = {
       g,
       dot: el('circle', { class: 'sdot', r: 8 }, g),
-      label: el('text', { class: 'slabel' }, g),
-      truth: el('g', { class: 'truth', style: 'display:none' }, svg)
+      label: el('text', { class: 'slabel' }, g)
     };
-    el('line', { x1: -7, y1: 0, x2: 7, y2: 0 }, srcEls.truth);
-    el('line', { x1: 0, y1: -7, x2: 0, y2: 7 }, srcEls.truth);
-    el('text', { x: -10, y: -8 }, srcEls.truth).textContent = 'rig (sim)';
+    placePods();
   }
 
   // Pods are HTML buttons laid over the map, because CSS box-shadow does not
@@ -216,12 +215,6 @@
     const est = estimateSource(snap);
     const tr = snap.sim_truth;
     const line = $('src-line');
-    if (tr) {
-      const [tx, ty] = lay.toSvg(tr);
-      srcEls.truth.setAttribute('transform', 'translate(' + tx + ',' + ty + ')');
-      srcEls.truth.style.display = '';
-    } else srcEls.truth.style.display = 'none';
-
     if (!est) {
       srcEls.g.style.display = 'none';
       line.textContent = 'No source estimate. It appears once a link clears the hit threshold.';
@@ -338,7 +331,7 @@
   }
   function captureBaseline() {
     const n = LINKS.reduce((m, l) => Math.min(m, state.history[l].length), Infinity);
-    if (n < 10) { $('base-status').textContent = 'Need about 5 s of data first (' + n + ' / 10 snapshots).'; return; }
+    if (n < 10) { $('base-status').textContent = 'Need about 5 s of full-window data first (' + n + ' / 10 snapshots).'; return; }
     const spec = {};
     LINKS.forEach(l => {
       const h = state.history[l];
@@ -447,9 +440,7 @@
     // sidebar footer: which run this is and how long it has been up
     const e = Math.floor((Date.now() - state.started) / 1000);
     const up = pad2(Math.floor(e / 60)) + ':' + pad2(e % 60);
-    $('f-av').textContent = state.sim ? 'R' + (state.run + 1) : 'LV';
-    $('f-name').textContent = state.sim ? RUN_NAME[state.run] : 'Live';
-    $('f-sub').textContent = (state.sim ? RUN_DESC[state.run] : 'Backend') + ' · ' + up;
+    footer(up);
 
     renderKpis(s, hot);
     renderNodes(s);
@@ -488,13 +479,24 @@
   }
 
   function renderLog() {
-    if (!state.log.length) { $('log').innerHTML = '<li class="empty">No detections yet.</li>'; return; }
-    $('log').innerHTML = state.log.map(x =>
+    const list = $('log'), foot = $('log-foot');
+    if (!state.log.length) {
+      list.innerHTML = '<li class="empty">No detections yet.</li>';
+      foot.textContent = 'Waiting for a hit';
+      return;
+    }
+    list.innerHTML = state.log.map(x =>
       '<li data-link="' + x.link + '"><div class="top">' +
       '<span class="id' + (x.confirmed ? ' both' : '') + '">' + short(x.link) + '</span>' +
       '<span class="time">' + hms(x.at) + '</span><span class="hz">' + x.peak.toFixed(2) + ' Hz</span></div>' +
       '<div class="sub">ratio ' + x.ratio.toFixed(1) + '× bg · HIT · ' +
       (x.confirmed ? 'both directions with ' + short(rev(x.link)) : 'one direction only') + '</div></li>').join('');
+    // Show whole rows only: hide the first row that would be cut off, and everything after it.
+    let shown = 0, over = false;
+    [...list.children].forEach(li => {
+      if (over || li.offsetTop + li.offsetHeight > list.clientHeight) { over = true; li.hidden = true; } else shown++;
+    });
+    foot.textContent = 'Showing ' + shown + ' of ' + state.log.length + ' · newest first';
   }
 
   function select(name) { state.selected = name; render(); }
@@ -504,10 +506,12 @@
     if (!state.running) return;
     state.snap = snap;
     ensureLayout(snap);
-    LINKS.forEach(name => {
-      const h = state.history[name];
-      if (snap.links[name]) { h.push(snap.links[name].spectrum); if (h.length > HISTORY) h.shift(); }
-    });
+    if (ready(snap)) {                      // partly filled windows would drag a captured baseline down
+      LINKS.forEach(name => {
+        const h = state.history[name];
+        if (snap.links[name]) { h.push(snap.links[name].spectrum); if (h.length > HISTORY) h.shift(); }
+      });
+    }
     logHits(snap, evalLatch(snap));
     updateHold(snap);
     const ls = LINKS.map(n => snap.links[n]).filter(Boolean), S = state.series;
@@ -519,21 +523,239 @@
     render();
   }
 
+  // ---- data sources -------------------------------------------------------
+  // Everything below ends in onSnapshot(). The simulator builds snapshots itself.
+  // Serial, a CSV file and a WebSocket carrying CSV lines feed MolesPipeline,
+  // which builds the same snapshot from the firmware's rows.
+  const store = {
+    get(k) { try { return localStorage.getItem('moles.' + k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem('moles.' + k, v); } catch (e) { /* storage blocked: fine, nothing depends on it */ } }
+  };
+  const SOURCE_NAME = { none: 'No source', sim: 'Simulator', serial: 'Serial', csv: 'CSV replay', ws: 'WebSocket' };
+  const SOURCE_TAG = { none: '–', sim: '', serial: 'SR', csv: 'CS', ws: 'WS' };
+  let active = null;                       // { kind, pl, stop() }
+
   function setSource(kind, text) {
     $('source-text').textContent = text;
     $('conn-dot').className = 'dotc ' + kind;
   }
+  const srcStatus = t => { $('src-status').textContent = t; };
 
+  function footer(up) {
+    const kind = state.source;
+    $('f-av').textContent = kind === 'sim' ? 'R' + (state.run + 1) : SOURCE_TAG[kind];
+    $('f-name').textContent = kind === 'sim' ? RUN_NAME[state.run] : SOURCE_NAME[kind];
+    $('f-sub').textContent = (kind === 'sim' ? RUN_DESC[state.run] : state.srcLabel || '–') + (up ? ' · ' + up : '');
+  }
+
+  // Pod positions are optional. Without them the layout is a placeholder and
+  // the estimated position is labelled relative.
+  function readPods() {
+    const v = ['pod-a', 'pod-b', 'pod-c'].map(id => $(id).value.trim());
+    if (v.some(x => !x)) return null;
+    const pts = v.map(x => x.split(/[\s,]+/).filter(Boolean).map(Number));
+    if (pts.some(p => p.length !== 2 || p.some(n => !isFinite(n)))) return null;
+    return { A: pts[0], B: pts[1], C: pts[2] };
+  }
+  function podsChanged() {
+    store.set('pods', ['pod-a', 'pod-b', 'pod-c'].map(id => $(id).value.trim()).join('|'));
+    if (active && active.pl) active.pl.setPods(readPods());
+  }
+
+  function stopSource() {
+    if (!active) return;
+    try { active.stop(); } catch (e) { console.error('stopping source', e); }
+    active = null;
+  }
+
+  function showSourceUi() {
+    const sim = state.source === 'sim';
+    $('seg-runs').classList.toggle('hidden', !sim);
+    $('sim-panel').classList.toggle('hidden', !sim);
+    $('real-src').classList.toggle('hidden', sim);
+    $('btn-disc').classList.toggle('hidden', !['serial', 'csv', 'ws'].includes(state.source));
+    document.querySelectorAll('#seg-sim .seg-btn').forEach(b => b.classList.toggle('active', (b.dataset.sim === '1') === sim));
+  }
+
+  // Blank the dashboard until the new source delivers its first snapshot.
+  function renderEmpty() {
+    const b = $('banner');
+    b.className = 'banner watch';
+    b.textContent = state.source === 'none'
+      ? 'No data source. Turn the simulator on, connect serial, or load a CSV file.'
+      : 'Waiting for data…';
+    $('src-line').textContent = '–';
+    $('pairs').innerHTML = '';
+    $('nodes').innerHTML = '';
+    $('mesh-hits').textContent = '0 hits';
+    $('fft-desc').textContent = '–';
+    $('json').textContent = '';
+    KPIS.forEach(k => { $('k-' + k.id + '-v').textContent = '–'; $('k-' + k.id + '-d').innerHTML = ''; Charts.clear($('k-' + k.id + '-c')); });
+    Charts.clear($('c-bars'));
+    LINKS.forEach(n => { if (linkEls[n]) linkEls[n].classList.remove('hot', 'confirmed'); });
+    PODS.forEach(id => { if (podEls[id]) podEls[id].querySelector('input').checked = false; });
+    if (srcEls) srcEls.g.style.display = 'none';
+    placePods();
+    renderLog();
+    footer('');
+  }
+
+  // Stop whatever was running and start clean. The baseline is kept on purpose:
+  // it is captured under one condition and compared under another.
+  function beginSource(kind, label) {
+    stopSource();
+    state.source = kind;
+    state.srcLabel = label || '';
+    state.snap = null;
+    state.log = []; state.hits = 0; state.started = Date.now();
+    resetLatch(); resetSeries();
+    showSourceUi();
+    renderEmpty();
+  }
+
+  function useSim() {
+    beginSource('sim', 'Simulator');
+    setSource('sim', 'simulator');
+    state.sim.start(onSnapshot);
+    active = { kind: 'sim', stop: () => state.sim.stop() };
+    store.set('sim', '1');
+  }
+
+  function goReal(msg) {
+    beginSource('none', '');
+    setSource('down', 'no source');
+    srcStatus(msg || 'No source. Connect serial, load a CSV, or turn the simulator on.');
+    store.set('sim', '0');
+  }
+
+  const pipelineStatus = pl => pl.stats.ok + ' rows read · ' + pl.stats.rejected + ' rejected · ' + pl.stats.gaps + ' gaps';
+
+  // Live sources: emit a snapshot twice a second once any row has arrived.
+  function emitter(pl) {
+    return setInterval(() => {
+      if (pl.stats.ok > 0) onSnapshot(pl.snapshot());
+      if (active && active.pl === pl) srcStatus(pipelineStatus(pl));
+    }, 500);
+  }
+
+  async function connectSerial() {
+    if (!('serial' in navigator)) {
+      srcStatus('Web Serial is not available here. Use Chrome or Edge on a computer, opened from localhost or https.');
+      return;
+    }
+    let port;
+    try { port = await navigator.serial.requestPort(); } catch (e) { srcStatus('No port chosen.'); return; }
+    const baud = parseInt($('baud').value, 10) || 921600;
+    store.set('baud', String(baud));
+    beginSource('serial', baud + ' baud');
+    try { await port.open({ baudRate: baud }); }
+    catch (e) { setSource('down', 'serial · could not open'); srcStatus('Could not open the port: ' + e.message + '. Close anything else using it (the Arduino serial monitor, for example).'); return; }
+
+    const pl = window.MolesPipeline.create({ source: 'serial' });
+    pl.setPods(readPods());
+    let stopped = false, reader = null;
+    const timer = emitter(pl);
+    active = {
+      kind: 'serial', pl,
+      stop() {
+        stopped = true; clearInterval(timer);
+        Promise.resolve(reader && reader.cancel()).catch(() => {})
+          .then(() => new Promise(r => setTimeout(r, 60)))
+          .then(() => port.close()).catch(() => {});
+      }
+    };
+    setSource('live', 'serial · ' + baud + ' baud');
+    srcStatus('Connected. Waiting for rows…');
+
+    (async () => {
+      const dec = new TextDecoder();
+      let buf = '', errors = 0, ended = false;
+      try {
+        // Web Serial can throw on a noisy read (framing, overrun) and keep port.readable, so a
+        // read error re-acquires the reader instead of giving up. A closed stream ends the loop.
+        while (!stopped && !ended && port.readable) {
+          reader = port.readable.getReader();
+          try {
+            for (;;) {
+              const { value, done } = await reader.read();
+              if (done) { ended = true; break; }
+              buf += dec.decode(value, { stream: true });
+              let i;
+              while ((i = buf.indexOf('\n')) >= 0) { pl.ingestLine(buf.slice(0, i)); buf = buf.slice(i + 1); }
+              if (buf.length > 200000) buf = '';         // no newline for a long time: garbage, drop it
+            }
+          } catch (e) {
+            if (stopped) break;
+            if (++errors > 20) throw e;
+            buf = '';                                    // a torn line is not worth keeping
+          } finally { reader.releaseLock(); reader = null; }
+        }
+        if (!stopped) { setSource('down', 'serial · stream ended'); srcStatus('The serial stream ended. ' + pipelineStatus(pl)); }
+      } catch (e) {
+        if (!stopped) { setSource('down', 'serial · disconnected'); srcStatus('Serial read stopped: ' + e.message); }
+      }
+    })();
+  }
+
+  function loadCsv(file) {
+    beginSource('csv', file.name);
+    setSource('sim', 'csv · ' + file.name);
+    file.text().then(text => {
+      if (state.source !== 'csv') return;                // the user switched away while the file was reading
+      const pl = window.MolesPipeline.create({ source: 'csv' });
+      pl.setPods(readPods());
+      const rows = [];
+      let bad = 0;
+      text.split(/\r?\n/).forEach(line => {
+        const r = pl.parse(line);
+        if (r && r.error) bad++; else if (r) rows.push(r);
+      });
+      if (!rows.length) {
+        setSource('down', 'csv · no data');
+        srcStatus('No valid rows in ' + file.name + '. Expected: t_ms, rx_id, tx_id, seq, status, fp_index, I0, Q0, …');
+        return;
+      }
+      const t0 = rows[0].t;
+      let i = 0, clock = t0, lastEmit = -Infinity, lastWall = 0;
+      const timer = setInterval(() => {
+        clock += 50 * (+$('csv-speed').value || 1);
+        while (i < rows.length && rows[i].t <= clock) pl.ingestRow(rows[i++]);
+        const done = i >= rows.length, now = performance.now();
+        // wall-clock throttle keeps a fast replay from starving the page; persistence timing uses data time
+        if (pl.stats.ok > 0 && (done || (clock - lastEmit >= 500 && now - lastWall >= 100))) {
+          onSnapshot(pl.snapshot()); lastEmit = clock; lastWall = now;
+        }
+        srcStatus((done ? 'Replay finished · ' : 'Replaying · ') + i + ' / ' + rows.length + ' rows · ' + ((Math.min(clock, rows[rows.length - 1].t) - t0) / 1000).toFixed(0) + ' s' + (bad ? ' · ' + bad + ' rejected' : ''));
+        if (done) { clearInterval(timer); setSource('live', 'csv · finished'); }
+      }, 50);
+      active = { kind: 'csv', pl, stop: () => clearInterval(timer) };
+      srcStatus('Replaying ' + rows.length + ' rows' + (bad ? ' (' + bad + ' rejected)' : '') + '…');
+    }).catch(e => { setSource('down', 'csv · unreadable'); srcStatus('Could not read the file: ' + e.message); });
+  }
+
+  // A backend can send either whole snapshots (JSON) or raw CSV lines.
   function connectWs(url) {
-    let retry = 0;
+    if (!/^wss?:\/\//i.test(url)) { srcStatus('The URL must start with ws:// or wss://'); return; }
+    store.set('ws', url);
+    beginSource('ws', url);
+    setSource('down', 'connecting · ' + url);
+    const pl = window.MolesPipeline.create({ source: 'ws' });
+    pl.setPods(readPods());
+    let retry = 0, socket = null, closed = false;
+    const timer = emitter(pl);
     const open = () => {
-      const ws = new WebSocket(url);
-      ws.onopen = () => { retry = 0; setSource('live', 'live · ' + url); };
-      ws.onmessage = ev => { try { onSnapshot(JSON.parse(ev.data)); } catch (err) { console.error('bad snapshot', err); } };
-      ws.onclose = () => { setSource('down', 'disconnected · retrying'); setTimeout(open, Math.min(5000, 500 * ++retry)); };
-      ws.onerror = () => ws.close();
+      socket = new WebSocket(url);
+      socket.onopen = () => { retry = 0; setSource('live', 'live · ' + url); srcStatus('Connected. Waiting for data…'); };
+      socket.onmessage = ev => {
+        if (typeof ev.data !== 'string') return;
+        if (ev.data.trimStart()[0] === '{') { try { onSnapshot(JSON.parse(ev.data)); } catch (err) { console.error('bad snapshot', err); } }
+        else ev.data.split(/\r?\n/).forEach(l => pl.ingestLine(l));
+      };
+      socket.onclose = () => { if (closed) return; setSource('down', 'disconnected · retrying'); setTimeout(open, Math.min(5000, 500 * ++retry)); };
+      socket.onerror = () => socket.close();
     };
     open();
+    active = { kind: 'ws', pl, stop() { closed = true; clearInterval(timer); if (socket) socket.close(); } };
   }
 
   // ---- controls -----------------------------------------------------------
@@ -571,13 +793,13 @@
       const collapsed = btn.closest('.nav-section').classList.toggle('collapsed');
       btn.setAttribute('aria-expanded', String(!collapsed));
     }));
-    window.addEventListener('resize', () => { if (state.snap) render(); });
+    window.addEventListener('resize', () => { if (state.snap) render(); else placePods(); });
     setInterval(() => { if (state.snap && state.running) $('clock').textContent = hms(new Date()); }, 1000);
   }
 
   function wireSim(sim) {
     const restart = () => { sim.reset(); resetLatch(); resetSeries(); };
-    const btns = document.querySelectorAll('.seg-btn');
+    const btns = document.querySelectorAll('#seg-runs .seg-btn');
     btns.forEach(btn => btn.addEventListener('click', () => {
       btns.forEach(x => x.classList.toggle('active', x === btn));
       state.run = +btn.dataset.run;
@@ -590,19 +812,44 @@
     sim.params.source = RIG_POS[+$('sel-pos').value].slice();
   }
 
+  function wireSources() {
+    document.querySelectorAll('#seg-sim .seg-btn').forEach(b => b.addEventListener('click', () => {
+      if (b.dataset.sim === '1') { if (state.source !== 'sim') useSim(); }
+      else if (state.source === 'sim') goReal();
+    }));
+    $('btn-serial').addEventListener('click', connectSerial);
+    $('btn-csv').addEventListener('click', () => $('csv-file').click());
+    $('csv-file').addEventListener('change', e => {
+      const f = e.target.files[0];
+      e.target.value = '';                               // so the same file can be loaded again
+      if (f) loadCsv(f);
+    });
+    $('btn-ws').addEventListener('click', () => connectWs($('ws-url').value.trim()));
+    $('ws-url').addEventListener('keydown', e => { if (e.key === 'Enter') connectWs($('ws-url').value.trim()); });
+    $('btn-disc').addEventListener('click', () => goReal('Disconnected.'));
+    $('baud').addEventListener('change', () => store.set('baud', $('baud').value));
+    ['pod-a', 'pod-b', 'pod-c'].forEach(id => $(id).addEventListener('change', podsChanged));
+    if ('serial' in navigator) navigator.serial.addEventListener('disconnect', () => {
+      if (active && active.kind === 'serial') { setSource('down', 'serial · unplugged'); srcStatus('The serial device was unplugged.'); }
+    });
+    else $('btn-serial').title = 'Web Serial needs Chrome or Edge, opened from localhost or https';
+  }
+
   // ---- boot ---------------------------------------------------------------
   buildKpis();
   wire();
-  const ws = new URLSearchParams(location.search).get('ws');
-  if (ws) {
-    $('seg-runs').classList.add('hidden');
-    $('sim-panel').classList.add('hidden');
-    setSource('down', 'connecting · ' + ws);
-    connectWs(ws);
-  } else {
-    setSource('sim', 'simulator');
-    state.sim = window.MolesSim.makeSim();
-    wireSim(state.sim);
-    state.sim.start(onSnapshot);
-  }
+  state.sim = window.MolesSim.makeSim();
+  wireSim(state.sim);
+  wireSources();
+
+  // remembered settings (all optional)
+  if (store.get('baud')) $('baud').value = store.get('baud');
+  if (store.get('ws')) $('ws-url').value = store.get('ws');
+  if (store.get('pods')) store.get('pods').split('|').forEach((v, i) => { const el = $(['pod-a', 'pod-b', 'pod-c'][i]); if (el) el.value = v; });
+
+  ensureLayout({});                                        // draw the default mesh so the page is never blank
+  const q = new URLSearchParams(location.search), wsParam = q.get('ws');
+  if (wsParam) { $('ws-url').value = wsParam; connectWs(wsParam); }
+  else if (q.get('sim') === 'false' || store.get('sim') === '0') goReal();
+  else useSim();
 })();
