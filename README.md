@@ -74,3 +74,45 @@ Nothing else gets built until that passes.
 Only claim what's been measured. "We detected a 0.2 Hz signal through the pile
 on link A to B" is true and defensible. "We detect breathing under rubble" is
 not yet. See CLAUDE.md.
+
+## Backend (live API + dashboard)
+
+A small read-only layer over the pipeline: the monitor writes each 30 s window
+verdict to SQLite, FastAPI serves it, and a live page polls it.
+
+```
+moles_monitor.py --writes--> backend/moles.db <--reads-- app.py (FastAPI) <--polls-- frontend/live.html
+```
+
+FastAPI + uvicorn come from `requirements.txt`. SQLite is stdlib. To run it:
+
+```bash
+# 1. fake data across two links (no hardware); also creates the db
+cd backend && python3 seed_fake.py
+
+# 2. serve the API (creates the db if missing)
+uvicorn app:app --port 8000
+
+# 3. serve the dashboard, then open http://127.0.0.1:8137/live.html
+cd ../frontend && python3 -m http.server 8137
+```
+
+Feed **real** verdicts by running the monitor with `--db` (writes to
+`../backend/moles.db`, the file the API reads):
+
+```bash
+cd esp32-hand_test && python3 moles_monitor.py --db
+```
+
+Endpoints (JSON): `GET /current?link_id=A->B`, `GET /history?link_id=A->B&limit=120`
+(oldest→newest), `GET /links`. An empty db returns `null` / `[]`.
+
+**The `breathing` field.** Every row the API returns includes a derived
+`breathing` boolean — **not** the pipeline's raw `detected` column, which latches
+onto the slow ~0.1 Hz drift. It is true when `freq_hz` is in `[0.15, 0.50]` Hz
+**and** `snr_db >= 18`. The dashboard should key off `breathing`. Thresholds live
+in `backend/db.py`.
+
+Files: `backend/db.py` (schema + `init_db` + `insert_window` + `is_breathing`),
+`backend/app.py` (the API), `backend/seed_fake.py` (test data),
+`frontend/live.html` + `live.js` (the polling page).
