@@ -1,0 +1,2 @@
+link,window,t0_s,stages,victim_tap,clutter,estimator,peak_hz,per_min,snr_db,amp_mm,valid_frac,filled_frac,spikes,masked,cross_hz,snr_ok,valid_ok,stable,detected
+A->B,0,37.0,gate+align+deadtap+reference+clutter+hampel+detrend,37,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1074,6.45,29.17,36.790,0.983,0.000,5,,nan,True,True,,False

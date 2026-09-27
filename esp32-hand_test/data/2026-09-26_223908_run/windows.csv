@@ -1,0 +1,35 @@
+link,window,t0_s,stages,victim_tap,clutter,estimator,peak_hz,per_min,snr_db,amp_mm,valid_frac,filled_frac,spikes,masked,cross_hz,snr_ok,valid_ok,stable,detected
+A->B,0,0.0,gate+align+deadtap+reference+clutter+hampel+detrend,39,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.2197,13.18,24.53,22.044,0.993,0.000,2,,nan,True,True,,False
+A->B,1,30.0,gate+align+deadtap+reference+clutter+hampel+detrend,40,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1123,6.74,31.20,38.669,0.990,0.000,3,,nan,True,True,False,False
+A->B,2,60.0,gate+align+deadtap+reference+clutter+hampel+detrend,3,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1221,7.32,22.10,4.793,0.983,0.000,5,,nan,True,True,True,True
+A->B,3,90.0,gate+align+deadtap+reference+clutter+hampel+detrend,19,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1758,10.55,21.83,51.011,0.950,0.000,15,,nan,True,True,False,False
+A->B,4,120.0,gate+align+deadtap+reference+clutter+hampel+detrend,13,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1367,8.20,24.60,36.801,0.990,0.000,3,,nan,True,True,False,False
+A->B,5,150.0,gate+align+deadtap+reference+clutter+hampel+detrend,18,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1025,6.15,28.80,24.330,0.997,0.000,1,,nan,True,True,False,False
+A->B,6,180.0,gate+align+deadtap+reference+clutter+hampel+detrend,39,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1025,6.15,32.36,42.669,0.987,0.000,4,,nan,True,True,True,True
+A->B,7,210.0,gate+align+deadtap+reference+clutter+hampel+detrend,4,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1904,11.43,20.48,18.882,0.980,0.000,6,,nan,True,True,False,False
+A->B,8,240.0,gate+align+deadtap+reference+clutter+hampel+detrend,8,tap-phase (center inside the point cloud),"FFT (Hann, gap-free)",0.1025,6.15,31.21,17.823,1.000,0.000,0,,nan,True,True,False,False
+A->B,9,270.0,gate+align+deadtap+reference+clutter+hampel+detrend,4,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1416,8.50,22.97,7.166,0.967,0.000,10,,nan,True,True,False,False
+A->B,10,300.0,gate+align+deadtap+reference+clutter+hampel+detrend,5,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1660,9.96,27.02,14.995,0.993,0.000,2,,nan,True,True,True,True
+A->B,11,330.0,gate+align+deadtap+reference+clutter+hampel+detrend,38,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1416,8.50,24.78,37.363,0.993,0.000,2,,nan,True,True,True,True
+A->B,12,360.0,gate+align+deadtap+reference+clutter+hampel+detrend,39,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.2490,14.94,25.37,12.728,0.993,0.000,2,,nan,True,True,False,False
+A->B,13,390.0,gate+align+deadtap+reference+clutter+hampel+detrend,22,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1025,6.15,18.59,28.363,0.967,0.000,10,,nan,True,True,False,False
+A->B,14,420.0,gate+align+deadtap+reference+clutter+hampel+detrend,30,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1025,6.15,22.82,23.793,0.993,0.000,2,,nan,True,True,True,True
+A->B,15,450.0,gate+align+deadtap+reference+clutter+hampel+detrend,40,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1221,7.32,23.84,29.116,0.983,0.000,5,,nan,True,True,True,True
+A->B,16,480.0,gate+align+deadtap+reference+clutter+hampel+detrend,30,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1025,6.15,22.19,18.567,0.983,0.000,5,,nan,True,True,True,True
+A->B,17,510.0,gate+align+deadtap+reference+clutter+hampel+detrend,32,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.3418,20.51,13.95,2.151,0.997,0.000,1,,nan,True,True,False,False
+A->B,18,540.0,gate+align+deadtap+reference+clutter+hampel+detrend,3,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.2100,12.60,20.40,7.281,0.993,0.000,2,,nan,True,True,False,False
+A->B,19,570.0,gate+align+deadtap+reference+clutter+hampel+detrend,4,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1074,6.45,25.64,7.653,0.997,0.000,1,,nan,True,True,False,False
+A->B,20,600.0,gate+align+deadtap+reference+clutter+hampel+detrend,27,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.2441,14.65,21.09,18.830,0.983,0.000,5,,nan,True,True,False,False
+A->B,21,630.0,gate+align+deadtap+reference+clutter+hampel+detrend,30,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1855,11.13,22.72,29.734,0.983,0.000,5,,nan,True,True,False,False
+A->B,22,660.0,gate+align+deadtap+reference+clutter+hampel+detrend,10,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1221,7.32,26.84,16.965,0.973,0.000,8,,nan,True,True,False,False
+A->B,23,690.0,gate+align+deadtap+reference+clutter+hampel+detrend,32,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1025,6.15,26.61,35.095,0.990,0.000,3,,nan,True,True,True,True
+A->B,24,720.0,gate+align+deadtap+reference+clutter+hampel+detrend,4,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1709,10.25,26.82,43.256,0.983,0.000,5,,nan,True,True,False,False
+A->B,25,750.0,gate+align+deadtap+reference+clutter+hampel+detrend,16,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.2148,12.89,25.87,41.178,0.997,0.000,1,,nan,True,True,False,False
+A->B,26,780.0,gate+align+deadtap+reference+clutter+hampel+detrend,32,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1270,7.62,22.43,33.212,0.997,0.000,1,,nan,True,True,False,False
+A->B,27,810.0,gate+align+deadtap+reference+clutter+hampel+detrend,21,tap-phase (center inside the point cloud),"FFT (Hann, gap-free)",0.2148,12.89,27.62,80.038,1.000,0.000,0,,nan,True,True,False,False
+A->B,28,840.0,gate+align+deadtap+reference+clutter+hampel+detrend,29,tap-phase (center inside the point cloud),"FFT (Hann, gap-free)",0.1758,10.55,27.00,87.818,1.000,0.000,0,,nan,True,True,False,False
+A->B,29,870.0,gate+align+deadtap+reference+clutter+hampel+detrend,8,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1172,7.03,28.61,89.306,0.987,0.000,4,,nan,True,True,False,False
+A->B,30,900.0,gate+align+deadtap+reference+clutter+hampel+detrend,5,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1221,7.32,26.08,45.221,0.987,0.000,4,,nan,True,True,True,True
+A->B,31,930.0,gate+align+deadtap+reference+clutter+hampel+detrend,4,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.2344,14.06,23.09,42.100,0.997,0.000,1,,nan,True,True,False,False
+A->B,32,960.0,gate+align+deadtap+reference+clutter+hampel+detrend,17,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.1172,7.03,24.68,23.885,0.980,0.000,6,,nan,True,True,False,False
+A->B,33,990.0,gate+align+deadtap+reference+clutter+hampel+detrend,19,tap-phase (center inside the point cloud),Lomb-Scargle (gaps),0.2197,13.18,22.68,37.058,0.997,0.000,1,,nan,True,True,False,False
