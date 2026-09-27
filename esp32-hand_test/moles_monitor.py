@@ -1163,10 +1163,29 @@ class WindowLog:
               "per_min", "snr_db", "amp_mm", "valid_frac", "filled_frac", "spikes", "masked",
               "cross_hz", "snr_ok", "valid_ok", "stable", "detected"]
 
-    def __init__(self, path):
+    def __init__(self, path, db_path=None):
         self.fh = open(path, "w", newline="")
         self.w = csv.writer(self.fh)
         self.w.writerow(self.FIELDS)
+        # Optional additive sink: the backend SQLite DB the live API serves.
+        self._db = self._load_db(db_path) if db_path else None
+        self._db_warned = False
+
+    @staticmethod
+    def _load_db(db_path):
+        """Import the backend/db.py sink and point it at db_path. None on failure."""
+        try:
+            backend = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend")
+            if backend not in sys.path:
+                sys.path.insert(0, backend)
+            import db as dbmod
+            dbmod.DB_PATH = os.path.abspath(db_path)
+            dbmod.init_db()
+            print(f"{DIM}[db] window verdicts -> {dbmod.DB_PATH}{RST}")
+            return dbmod
+        except Exception as e:                     # never let the DB break the pipeline
+            print(f"{YEL}[db] disabled: {e}{RST}")
+            return None
 
     def add(self, r):
         self.w.writerow([r.link, r.index, f"{r.t0:.1f}", "+".join(r.stages),
@@ -1176,6 +1195,28 @@ class WindowLog:
                          ";".join(f"{k}={v}" for k, v in r.reasons.items()), f"{r.cross_hz:.4f}",
                          r.snr_ok, r.valid_ok, r.stable, r.detected])
         self.fh.flush()
+        self._to_db(r)
+
+    def _to_db(self, r):
+        if self._db is None:
+            return
+        nn = lambda x: None if (x is None or (isinstance(x, float) and math.isnan(x))) else x
+        try:
+            self._db.insert_window(
+                timestamp=time.time(),                 # wall-clock when this window closed
+                link_id=r.link,                        # already "A->B" etc.
+                freq_hz=nn(r.peak_hz),
+                bpm=nn(r.bpm),
+                snr_db=nn(r.snr_db),
+                detected=int(bool(r.detected)),
+                victim_tap=(None if r.victim is None else r.victim - FP_POS),
+                pct_valid=nn(None if r.valid_frac is None else r.valid_frac * 100.0),
+                methods_agree=None,   # no true two-method field in the pipeline yet (candidate: r.stable)
+            )
+        except Exception as e:
+            if not self._db_warned:                    # warn once, then stay quiet
+                print(f"{YEL}[db] insert failed ({e}); continuing without DB{RST}")
+                self._db_warned = True
 
     def close(self):
         self.fh.close()
@@ -1465,6 +1506,9 @@ def main():
     ap.add_argument("--no-plot", action="store_true", help="no plot window (PNGs are still saved)")
     ap.add_argument("--data", default="data", help="folder for run folders (default ./data)")
     ap.add_argument("--tag", default="run", help="run name, e.g. T1_onoff_run03")
+    ap.add_argument("--db", nargs="?", const="__default__", default=None, metavar="PATH",
+                    help="also write each window verdict to the backend SQLite DB the live API "
+                         "serves (optional PATH; default ../backend/moles.db)")
     ap.add_argument("--no-record", action="store_true", help="don't record raw packets (not recommended)")
     ap.add_argument("--replay", metavar="RAW_CSV", help="re-run a recorded raw.csv through the pipeline")
     ap.add_argument("--show", action="store_true", help="replay: show each window's plot on screen")
@@ -1528,7 +1572,11 @@ def main():
         rec = open(os.path.join(run_dir, "raw.csv"), "w", newline="")
         rec_w = csv.writer(rec)
         rec_w.writerow(RAW_HEADER)
-    wlog = WindowLog(os.path.join(run_dir, "windows.csv"))
+    db_path = None
+    if args.db is not None:
+        db_path = (os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "backend", "moles.db")
+                   if args.db == "__default__" else args.db)
+    wlog = WindowLog(os.path.join(run_dir, "windows.csv"), db_path=db_path)
     plot = FFTPlot(interactive=not args.no_plot, out_dir=run_dir)
     ses = Session(args, cfg, plot, wlog)
 

@@ -1,0 +1,4 @@
+# MOLES backend (laptop side). Install into the project venv:
+#   pip install -r backend/requirements.txt
+fastapi>=0.110
+uvicorn[standard]>=0.29

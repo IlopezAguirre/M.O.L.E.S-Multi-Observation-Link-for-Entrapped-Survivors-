@@ -1,0 +1,4 @@
+# runtime SQLite db (created by init_db / the pipeline) — never commit
+moles.db
+moles.db-wal
+moles.db-shm
