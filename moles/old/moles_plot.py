@@ -18,8 +18,6 @@ Panels
                 orange = link sees a peak elsewhere, grey = nothing, dotted = invalid/warming.
                 Red mole = told to flash (alert mask).
   bottom-right: tier banner + per-link table.
-  Green band on the spectrum = PERSON band (default 0.15-0.40 Hz). Only a peak there is a person;
-  above it = MOTION (reported, not a person); below it = drift (ignored).
 """
 
 from __future__ import annotations
@@ -32,7 +30,6 @@ import pups_dsp as D
 
 LINK_COLORS = {1: "#1f77b4", 2: "#ff7f0e", 3: "#2ca02c"}
 TIER_STYLE = {"CONFIRMED": ("#c0392b", "white"), "DETECTED": ("#e67e22", "white"),
-              "MOTION": ("#8e44ad", "white"),
               "none": ("#7f8c8d", "white"), "warming": ("#2980b9", "white")}
 MOLE_POS = {1: (0.0, 0.0), 2: (1.0, 0.0), 3: (0.5, 0.87)}
 
@@ -128,15 +125,8 @@ class MolesPlot:
             ymax = max(ymax, float(np.nanmax(y)) + 3)
             ax.plot(res.grid[m], y, lw=2.6, color="black", label="combined")
 
-        ax.axvspan(0, cfg.person_lo, color="0.88", zorder=0)                  # under: drift, ignored
-        ax.text(cfg.person_lo / 2, -5.6, "under\nignored", ha="center", va="bottom", fontsize=8, color="0.4", bbox=dict(fc="white", ec="none", alpha=0.8, pad=1.5))
-        ax.axvspan(cfg.person_lo, cfg.person_hi, color="#2ecc71", alpha=0.25, zorder=0)   # PERSON band
-        ax.text((cfg.person_lo + cfg.person_hi) / 2, -5.6,
-                f"PERSON\n{cfg.person_lo:.2f}-{cfg.person_hi:.2f} Hz", ha="center", va="bottom", fontsize=8,
-                color="#1e8449", fontweight="bold", bbox=dict(fc="white", ec="none", alpha=0.8, pad=1.5))
-        ax.axvspan(cfg.person_hi, xmax, color="0.95", zorder=0)                  # over: motion, not a person
-        ax.text(cfg.person_hi + 0.03, -5.6, "over: motion (not a person)",
-                ha="left", va="bottom", fontsize=8, color="0.4", bbox=dict(fc="white", ec="none", alpha=0.8, pad=1.5))
+        ax.axvspan(0, cfg.f_low, color="0.85", zorder=0)
+        ax.text(cfg.f_low / 2, ymax * 0.93, "below\nband", ha="center", va="top", fontsize=8, color="0.4")
         ax.axhline(cfg.pnr_margin_db, color="0.35", ls="--", lw=1)
         ax.text(xmax * 0.995, cfg.pnr_margin_db + 0.4, f"link margin {cfg.pnr_margin_db:.0f} dB",
                 ha="right", fontsize=8, color="0.35")
@@ -145,13 +135,8 @@ class MolesPlot:
                 ha="right", fontsize=8)
         if self.ref_hz:
             ax.axvline(self.ref_hz, color="green", ls="--", lw=1.3)
-            ax.text(self.ref_hz, -2.5, f"measured module rate {self.ref_hz:.3f} Hz ",
+            ax.text(self.ref_hz, -5.5, f"measured module rate {self.ref_hz:.3f} Hz ",
                     color="green", fontsize=8, va="bottom", ha="right")
-        ov = getattr(res, "over_hz", float("nan"))
-        if res.tier == "MOTION" and np.isfinite(ov):
-            ax.axvline(ov, color=TIER_STYLE["MOTION"][0], lw=1.5, ls="--", alpha=0.8)
-            ax.annotate(f"{ov:.3f} Hz\nmotion, not a person", xy=(ov, res.over_db), xytext=(10, 10),
-                        textcoords="offset points", fontsize=9, color=TIER_STYLE["MOTION"][0])
         if peak and res.tier in ("CONFIRMED", "DETECTED"):
             ax.axvline(peak, color=TIER_STYLE[res.tier][0], lw=1.5, alpha=0.8)
             ax.annotate(f"{peak:.3f} Hz\n{peak * 60:.1f} /min", xy=(peak, res.pnr_db),
@@ -186,7 +171,7 @@ class MolesPlot:
         ax.clear()
         t = np.array([h[0] for h in self.hist])
         t0, t1 = max(res.t_end - self.history_s, self.hist[0][0] - 1), res.t_end + 1
-        shade = {"CONFIRMED": "#c0392b", "DETECTED": "#e67e22", "MOTION": "#8e44ad", "warming": "#2980b9"}
+        shade = {"CONFIRMED": "#c0392b", "DETECTED": "#e67e22", "warming": "#2980b9"}
         for i, (ti, tier, _, _) in enumerate(self.hist):          # decision background
             if tier in shade:
                 w = (t[i + 1] - ti) if i + 1 < len(t) else cfg.update_s
@@ -246,17 +231,13 @@ class MolesPlot:
         ax.clear()
         ax.axis("off")
         bg, fg = TIER_STYLE.get(res.tier, ("0.5", "white"))
-        label = {"CONFIRMED": "PERSON — CONFIRMED, ≥2 links agree",
-                 "DETECTED": "PERSON — DETECTED, 1 link",
-                 "MOTION": "MOTION above band — not a person",
-                 "none": "no person (nothing in band above margin)",
+        label = {"CONFIRMED": "CONFIRMED — periodic motion, ≥2 links agree",
+                 "DETECTED": "DETECTED — periodic motion, 1 link",
+                 "none": "no periodic motion above margin",
                  "warming": "warming up (window filling)"}[res.tier]
         ax.text(0.0, 0.95, label, transform=ax.transAxes, fontsize=13, fontweight="bold", color=fg, va="top",
                 bbox=dict(boxstyle="round,pad=0.4", fc=bg, ec="none"))
-        if res.tier == "MOTION":
-            ax.text(0.0, 0.70, f"over-band peak {res.over_hz:.3f} Hz ({60 * res.over_hz:.1f} /min)   "
-                    f"PNR {res.over_db:.1f} dB — faster than breathing", transform=ax.transAxes, fontsize=10, va="top")
-        elif res.tier != "warming" and np.isfinite(res.peak_hz):
+        if res.tier != "warming" and np.isfinite(res.peak_hz):
             ax.text(0.0, 0.70, f"peak {res.peak_hz:.3f} Hz  ({res.per_min:.1f} /min)    combined PNR "
                     f"{res.pnr_db:.1f} dB    links agreeing {len(res.agreeing)}/{res.n_links}",
                     transform=ax.transAxes, fontsize=10, va="top")

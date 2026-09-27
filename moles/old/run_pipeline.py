@@ -44,7 +44,6 @@ def load_csv(path: str) -> list:
 def make_cfg(a) -> D.DSPConfig:
     return D.DSPConfig(window_s=a.window, update_s=a.update, mode=a.fft_mode, pnr_margin_db=a.margin,
                        combined_margin_db=a.combined_margin, interpolate=a.interp,
-                       person_lo=a.band_lo, person_hi=a.band_hi,
                        gate_pct=a.gate, dead_tap_mode=a.deadtap, bypass=frozenset(a.bypass or []))
 
 
@@ -81,7 +80,7 @@ def summarize(label, results, moles, cfg) -> dict:
     print(f"\n== {label}: {len(results)} updates ({len(live)} after warm-up), "
           f"combined margin {cfg.combined_margin_db:.0f} dB")
     print(f"   combined  CONFIRMED {100 * tiers['CONFIRMED'] / n:5.1f}%   DETECTED {100 * tiers['DETECTED'] / n:5.1f}%"
-          f"   MOTION(over band) {100 * tiers['MOTION'] / n:5.1f}%   none {100 * tiers['none'] / n:5.1f}%")
+          f"   none {100 * tiers['none'] / n:5.1f}%")
     if det:
         f = np.array([r.peak_hz for r in det])
         print(f"   peak      {np.median(f):.3f} Hz ({60 * np.median(f):.1f}/min), spread {np.ptp(f):.3f} Hz "
@@ -112,8 +111,6 @@ def main():
                     help="block (default): one FFT per independent 30 s block; sliding: every --update s")
     ap.add_argument("--margin", type=float, default=16.0, help="per-link margin (dB)")
     ap.add_argument("--combined-margin", type=float, default=12.0, help="combined-spectrum margin (dB)")
-    ap.add_argument("--band-lo", type=float, default=0.15, help="person band low edge (Hz); below = ignored")
-    ap.add_argument("--band-hi", type=float, default=0.40, help="person band high edge (Hz); above = MOTION, not a person")
     ap.add_argument("--interp", action="store_true", help="opt-in short-gap interpolation (flagged)")
     ap.add_argument("--gate", type=float, default=None, help="disturbance gate on weighted dev (%%)")
     ap.add_argument("--deadtap", choices=["weight", "hard", "off"], default="weight")
@@ -132,7 +129,7 @@ def main():
     cfg = make_cfg(a)
     active = [s for s in D.STAGES if s not in cfg.bypass]
     print(f"stages active: {', '.join(active)}   bypassed: {', '.join(sorted(cfg.bypass)) or 'none'}")
-    print(f"person band {cfg.person_lo:.2f}-{cfg.person_hi:.2f} Hz; searched {cfg.f_low:.3f}-{cfg.f_high:.2f} Hz (T={cfg.window_s:.0f}s, fs={cfg.fs:.0f}Hz), link margin "
+    print(f"band {cfg.f_low:.3f}-{cfg.f_high:.2f} Hz (T={cfg.window_s:.0f}s, fs={cfg.fs:.0f}Hz), link margin "
           f"{cfg.pnr_margin_db:.0f} dB, combined margin {cfg.combined_margin_db:.0f} dB")
 
     if a.compare:

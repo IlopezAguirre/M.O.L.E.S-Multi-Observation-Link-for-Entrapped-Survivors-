@@ -97,11 +97,12 @@ LEGEND = f"""{BOLD}LEGEND{RST}  (type h + Enter to show again)
  {BOLD}Δpath{RST}   Δφ as echo path-length change: 7.8° = 1 mm.
  {BOLD}meter{RST}   dev vs alert threshold (full bar = 2x threshold). Red + DISTURBED = over it.
  {BOLD}shape{RST}   CIR magnitude across the window, scaled to the baseline peak.
-{BOLD}DSP{RST} (with --dsp, once per second, all links on one clock, over the last 30 s)
- tier    CONFIRMED = combined peak >= 12 dB, stable, >=2 links agree. DETECTED = same, 1 link.
+{BOLD}DSP{RST} (with --dsp: collect a 30 s BLOCK, run ONE FFT, one verdict, then the next block)
+ block   independent 30 s of data (300 samples/link). No FFT runs while a block is filling.
+ tier    CONFIRMED = combined peak >= 12 dB and >=2 links agree. DETECTED = same, 1 link.
  peak    strongest periodic motion found anywhere in the band (no assumed rate).
  PNR     peak vs the rest of the spectrum. DETECTED needs PNR >= margin (16 dB),
-         <=10% missing samples, and the same peak in 3 consecutive windows.
+         and <=10% missing samples. Each block is judged on its own data.
  mode    arc = amplitude in mm of echo path; phase = small motion, amplitude in degrees.
 {BOLD}SUMMARY{RST} (every few seconds, per link)
  pkt/s   received rate (expect 10).  miss% = Mole B didn't answer.  lost% = ESP-NOW loss.
@@ -386,6 +387,10 @@ def open_port(port, baud):
     s.timeout = 0.05
     s.dtr = False      # don't reset the host ESP32 when the port opens
     s.rts = False
+    try:
+        s.exclusive = True  # a second monitor on the same port would split the bytes and see nothing
+    except (AttributeError, ValueError):
+        pass
     s.open()
     return s
 
@@ -420,12 +425,17 @@ def main():
     ap.add_argument("--record", metavar="FILE",
                     help="log every real mole packet to FILE as CSV for replay_dev.py")
     ap.add_argument("--dsp", action="store_true",
-                    help="run the MOLES DSP (pups_dsp.py) live: one combined result per second")
+                    help="run the MOLES DSP (pups_dsp.py) live: one FFT + verdict per 30 s block")
+    ap.add_argument("--fft-mode", choices=["block", "sliding"], default="block",
+                    help="block (default): one FFT per independent 30 s block. "
+                         "sliding: FFT of the last 30 s every second (old behaviour)")
     ap.add_argument("--dsp-margin", type=float, default=16.0, help="per-link detection margin (dB)")
     ap.add_argument("--combined-margin", type=float, default=12.0, help="combined-spectrum margin (dB)")
     ap.add_argument("--packets", action="store_true",
                     help="with --dsp: also print one line per packet (off by default: 30 lines/s)")
-    ap.add_argument("--plot", action="store_true", help="with --dsp: live FFT window (matplotlib)")
+    ap.add_argument("--plot", action="store_true", help="with --dsp: live FFT window (matplotlib, own process)")
+    ap.add_argument("--plot-inline", action="store_true",
+                    help="old behaviour: draw the window inside the monitor process (debug only)")
     ap.add_argument("--plot-fmax", type=float, default=2.0, help="plot x-axis max (Hz); grows to show the peak")
     ap.add_argument("--ref-hz", type=float, default=None,
                     help="module rate measured INDEPENDENTLY (drawn as a reference line only)")
@@ -433,6 +443,7 @@ def main():
                     help="with --dsp: send ALERT <mask> to the host so detecting moles blink")
     ap.add_argument("--json", metavar="FILE", help="with --dsp: append one JSON line per DSP update (backend feed)")
     ap.add_argument("--run-id", default=None, help="run id written into --json rows (default: start time)")
+    ap.add_argument("--duration", type=float, default=None, help="stop by itself after this many seconds")
     ap.add_argument("--list", action="store_true", help="list serial ports and exit")
     args = ap.parse_args()
 
@@ -440,9 +451,13 @@ def main():
     if args.dsp:
         try:
             import pups_dsp as dsp                 # lazy: the plain monitor stays numpy-free
+            import warnings                        # an all-invalid link (e.g. 0% valid) averages empty
+            warnings.filterwarnings("ignore", message="Mean of empty slice")   # slices; it's already
+            warnings.filterwarnings("ignore", message="invalid value encountered")  # flagged per link
         except ImportError as e:
             sys.exit(f"--dsp needs pups_dsp.py, align.py and numpy next to this file ({e})")
-        dsp_cfg = dsp.DSPConfig(pnr_margin_db=args.dsp_margin, combined_margin_db=args.combined_margin)
+        dsp_cfg = dsp.DSPConfig(pnr_margin_db=args.dsp_margin, combined_margin_db=args.combined_margin,
+                                mode=args.fft_mode)
     for flag in ("plot", "alert", "json", "packets"):
         if getattr(args, flag) and not args.dsp:
             sys.exit(f"--{flag} needs --dsp")
@@ -456,7 +471,8 @@ def main():
     try:
         ser = open_port(port, args.baud)
     except serial.SerialException as e:
-        sys.exit(f"Could not open {port}: {e}\n(Close the Arduino Serial Monitor if it's open.)")
+        sys.exit(f"Could not open {port}: {e}\n(Close the Arduino Serial Monitor, and check no other "
+                 f"moles_monitor is still running:  pkill -f moles_monitor)")
 
     rec = None
     if args.record:
@@ -481,21 +497,71 @@ def main():
     plot = None
     if args.plot:
         import moles_plot
-        plot = moles_plot.MolesPlot(dsp_cfg, fmax=args.plot_fmax, ref_hz=args.ref_hz)
+        if args.plot_inline:
+            plot = moles_plot.MolesPlot(dsp_cfg, fmax=args.plot_fmax, ref_hz=args.ref_hz)
+        else:
+            plot = moles_plot.PlotProcess(dsp_cfg, fmax=args.plot_fmax, ref_hz=args.ref_hz)
     jfile = open(args.json, "a") if args.json else None
     run_id = args.run_id or time.strftime("%Y%m%d-%H%M%S")
     sent_mask = None
-    last_pump = 0.0
+    gui = plot is not None and plot.interactive
+    if gui:
+        ser.timeout = 0            # never block on serial: idle time goes to the window instead
+    t_start = time.time()
+    n_bytes = n_frames = n_pkts = 0
+    last_watch = t_start
+    last_prog = t_start
     first_status = True
     last_pkt_time = time.time()
     live_lines = 0
 
     try:
         while not state["quit"]:
-            data = ser.read(4096)
-            if plot is not None and time.time() - last_pump > 0.1:
-                plot.pump()
-                last_pump = time.time()
+            if gui:
+                if plot.closed:
+                    print(f"{DIM}plot window closed — quitting{RST}")
+                    break
+                plot.pump(0.03)                        # GUI stays responsive (move / resize / close)
+                data = ser.read(ser.in_waiting or 1)   # timeout 0: returns at once
+            else:
+                data = ser.read(4096)
+            n_bytes += len(data)
+            if args.duration and time.time() - t_start >= args.duration:
+                print(f"{GRN}{args.duration:.0f} s done — stopping{RST}")
+                break
+            if plot is not None and not gui and plot.closed:
+                print(f"{DIM}plot window closed — monitor keeps running (q + Enter or Ctrl+C to quit){RST}")
+                plot = None
+
+            now = time.time()                          # ---- no-data watchdog (every 5 s)
+            if now - last_watch >= 5.0:
+                last_watch = now
+                up = now - t_start
+                msg = None
+                if n_bytes == 0:
+                    msg = (f"NO BYTES from {port} in {up:.0f} s: wrong port, host not flashed/powered, "
+                           f"or the Arduino Serial Monitor is holding the port")
+                elif n_frames == 0:
+                    msg = (f"{n_bytes} bytes but no valid frames: baud mismatch (host must be 921600) "
+                           f"or another program is reading the same port")
+                elif now - last_pkt_time > 5.0:
+                    msg = (f"host alive, but no mole packets for {now - last_pkt_time:.0f} s: moles "
+                           f"off/not flashed, or HOST_MAC in mole.ino doesn't match the host")
+                if msg:
+                    print(f"{RED}[watchdog] {msg}{RST}")
+                    if plot is not None:
+                        plot.set_waiting("waiting for data…\n\n" + msg.replace(": ", ":\n", 1), color="#c0392b")
+                elif plot is not None and n_pkts:
+                    plot.set_waiting(f"receiving packets ({n_pkts} so far)\n"
+                                     f"first FFT when the first 30 s block is complete")
+            if (moles is not None and dsp_cfg.mode == "block" and moles.t_now is not None
+                    and now - last_prog >= 5.0):
+                last_prog = now
+                blk, got = moles.progress()
+                msg = f"collecting block {blk}: {min(got, dsp_cfg.window_s):4.1f} / {dsp_cfg.window_s:.0f} s  (FFT when full)"
+                print(f"{DIM}   {msg}{RST}")
+                if plot is not None and hasattr(plot, "set_progress"):
+                    plot.set_progress(msg)
             if state["rebase"]:
                 state["rebase"] = False
                 for lk in links.values():
@@ -509,6 +575,7 @@ def main():
                 live_lines = 0
 
             for ftype, payload in reader.feed(data):
+                n_frames += 1
 
                 # ---------- host status text
                 if ftype == FRAME_TEXT:
@@ -527,6 +594,7 @@ def main():
 
                 # ---------- mole packet
                 last_pkt_time = time.time()
+                n_pkts += 1
                 f = struct.unpack(PKT_FMT, payload[6:])
                 magic, link_id, seq, rng, fp_idx = f[0], f[1], f[2], f[3], f[4]
                 if magic != MAGIC:
@@ -559,6 +627,9 @@ def main():
                         for lid, wr in sorted(mres.links.items()):
                             if wr is not None and mres.tier != "warming":
                                 note = mres.excluded.get(lid, "agrees" if lid in mres.agreeing else "")
+                                if wr.valid_frac < 0.9 and wr.masked:
+                                    why = {k: v for k, v in wr.masked.items() if v}
+                                    note += f"  rejected samples: {why}"
                                 print(f"{DIM}   {dsp.LINK_NAMES.get(lid, lid):5s} {wr.line()[11:]}  {note}{RST}")
                         if jfile is not None:
                             jfile.write(dsp.json.dumps(mres.to_json(wall_time=time.time(), run_id=run_id)) + "\n")
@@ -663,6 +734,8 @@ def main():
     finally:
         if args.alert and sent_mask:
             ser.write(b"ALERT 0\n")                   # don't leave moles blinking
+        if plot is not None and hasattr(plot, "stop"):
+            plot.stop()
         ser.close()
         if jfile is not None:
             jfile.close()

@@ -46,7 +46,7 @@ TAPS = 56
 SAT_LEVEL = 32000             # int16 taps (after the firmware's >>2); at or above = clipped
 NOISE_TAPS = (2, 3, 4, 5)     # fp-6..fp-3: pre-first-path, still valid after a +/-2 tap alignment
 STAGES = ("align", "deadtap", "phaseref", "clutter", "hampel", "detrend")   # bypassable
-PIPELINE_VERSION = "moles-dsp-2.2-band"
+PIPELINE_VERSION = "moles-dsp-2-block"
 
 # MOLES schedule (must match SCHEDULE[] in mole.ino): link_id -> name, (initiator, responder)
 LINK_NAMES = {1: "A->B", 2: "A->C", 3: "B->C"}
@@ -86,9 +86,7 @@ class DSPConfig:
     max_missing_frac: float = 0.10  # window invalid above this missing fraction
     hampel_half: int = 5            # Hampel half-window (samples)
     hampel_nsig: float = 3.5        # Hampel threshold in robust sigmas (MAD-based, relative)
-    cycles_min: float = 3.0         # lower edge of the searched spectrum = cycles_min / T
-    person_lo: float = 0.15         # PERSON band (Hz): only a peak in here counts as a person
-    person_hi: float = 0.40         # above = reported as "MOTION" (not a person); below = drift, ignored
+    cycles_min: float = 3.0         # lower band edge = cycles_min / T
     zero_pad: int = 2048            # FFT length for gap-free windows
     pnr_margin_db: float = 16.0     # per-link detection margin (best-of-~15-taps noise reached ~14.8 dB)
     combined_margin_db: float = 12.0  # combined-spectrum margin (3-link quiet max ~8.4 dB in simulation)
@@ -135,22 +133,10 @@ class WindowResult:
     masked: dict = field(default_factory=dict)     # reason -> count inside this window
     freqs: np.ndarray | None = None
     power: np.ndarray | None = None
-    over_hz: float = float("nan")    # strongest peak ABOVE the person band
-    over_db: float = float("nan")
-    under_hz: float = float("nan")   # strongest peak BELOW the person band (drift; never counts)
-    under_db: float = float("nan")
 
     @property
     def per_min(self) -> float:
         return self.peak_hz * 60.0
-
-    def zone_notes(self, margin: float) -> str:
-        out = []
-        if np.isfinite(self.over_db) and self.over_db >= margin:
-            out.append(f"over-band {self.over_hz:.3f} Hz {self.over_db:.1f} dB (motion, not a person)")
-        if np.isfinite(self.under_db) and self.under_db >= margin:
-            out.append(f"under-band {self.under_hz:.3f} Hz {self.under_db:.1f} dB (ignored)")
-        return ("  | " + "; ".join(out)) if out else ""
 
     def line(self) -> str:
         state = "DETECTED" if self.detected else "no detection"
@@ -231,45 +217,18 @@ def spectrum(t, y, gap_free: bool, cfg: DSPConfig):
     return f, lomb_scargle(t, y, f), "lomb"
 
 
-def peak_pnr(f: np.ndarray, P: np.ndarray, cfg: DSPConfig, lo: float | None = None, hi: float | None = None):
-    """Stage 13 metric: strongest peak inside [lo, hi] (default: the whole band) vs the
-    median of the whole searched band [f_low, f_high] away from that peak."""
+def peak_pnr(f: np.ndarray, P: np.ndarray, cfg: DSPConfig):
+    """Stage 13 metric: strongest in-band peak vs the median of the rest of the band."""
     band = (f >= cfg.f_low) & (f <= cfg.f_high)
     fb, Pb = f[band], P[band]
-    lo = cfg.f_low if lo is None else lo
-    hi = cfg.f_high if hi is None else hi
-    sub = (fb >= lo) & (fb <= hi)
-    if len(Pb) == 0 or not sub.any():
+    if len(Pb) == 0:
         return float("nan"), float("nan")
-    idx = np.flatnonzero(sub)
-    i = int(idx[np.argmax(Pb[idx])])
+    i = int(np.argmax(Pb))
     rest = Pb[np.abs(fb - fb[i]) > 2.0 / cfg.window_s]
     noise = np.median(rest) if len(rest) else np.nan
     if not noise or not np.isfinite(noise) or noise <= 0:
         return float(fb[i]), float("nan")
     return float(fb[i]), float(10 * np.log10(Pb[i] / noise))
-
-
-def band_peaks(f, P, cfg: DSPConfig) -> dict:
-    """Peaks in the three zones: person band, above it ("over"), below it ("under")."""
-    eps = 1e-9
-    pk, pnr = peak_pnr(f, P, cfg, cfg.person_lo, cfg.person_hi)
-    ov_hz, ov_db = peak_pnr(f, P, cfg, cfg.person_hi + eps, cfg.f_high)
-    un_hz, un_db = peak_pnr(f, P, cfg, cfg.f_low, cfg.person_lo - eps)
-    return {"peak_hz": pk, "pnr_db": pnr, "over_hz": ov_hz, "over_db": ov_db,
-            "under_hz": un_hz, "under_db": un_db,
-            "harmonic_of_under": harmonic_of_under(pk, pnr, un_hz, un_db, cfg)}
-
-
-def harmonic_of_under(pk, pnr, un_hz, un_db, cfg: DSPConfig) -> bool:
-    """True if the person-band peak is just the 2nd/3rd harmonic of a STRONGER slow wobble
-    below the band (e.g. 0.11 Hz drift -> 0.22 Hz echo). Such a peak must not count."""
-    if not (np.isfinite(pk) and np.isfinite(un_hz) and np.isfinite(un_db) and un_hz > 0):
-        return False
-    if np.isfinite(pnr) and un_db < pnr:
-        return False
-    tol = 1.5 / cfg.window_s
-    return any(abs(pk - n * un_hz) <= tol for n in (2, 3))
 
 
 # =============================================================================== pipeline
@@ -547,8 +506,7 @@ class LinkPipeline:
                 flags.append("estimators_disagree")
 
         # ---- stage 13: detect + quality
-        zones = band_peaks(f, P, cfg)
-        pk, pnr = zones["peak_hz"], zones["pnr_db"]           # person band only
+        pk, pnr = peak_pnr(f, P, cfg)
         self._peaks.append(pk)
         stable = (len(self._peaks) == cfg.n_stable
                   and np.ptp(np.array(self._peaks)) <= 1.0 / cfg.window_s)
@@ -556,10 +514,7 @@ class LinkPipeline:
         enough = (1.0 - valid_frac) <= cfg.max_missing_frac
         if not enough:
             flags.append("too_many_missing")
-        if zones["harmonic_of_under"]:
-            flags.append("harmonic_of_drift")
-        detected = bool(np.isfinite(pnr) and pnr >= cfg.pnr_margin_db and enough and stable
-                        and not zones["harmonic_of_under"])
+        detected = bool(np.isfinite(pnr) and pnr >= cfg.pnr_margin_db and enough and stable)
 
         lo, hi = np.percentile(yy, [2.5, 97.5]) if len(yy) else (np.nan, np.nan)
         return WindowResult(t_end=float(t_end), detected=detected, peak_hz=pk, pnr_db=pnr,
@@ -567,8 +522,7 @@ class LinkPipeline:
                             tap=k - FP_POS, mode=mode, arc_deg=arc, valid_frac=valid_frac,
                             filled_frac=float(filled.sum()) / n, outliers=int(outl.sum()) + pre_screened,
                             estimator=est, stable=stable, flags=flags, masked=dict(masked),
-                            freqs=f, power=P, over_hz=zones["over_hz"], over_db=zones["over_db"],
-                            under_hz=zones["under_hz"], under_db=zones["under_db"])
+                            freqs=f, power=P)
 
     def _demod(self, zk: np.ndarray):
         """Stages 5 + 7 for one tap -> (y, keep, mode, units, span_deg).
@@ -620,36 +574,28 @@ def combine_links(results: list[WindowResult], cfg: DSPConfig, min_agree: int = 
     use = [r for r in results if r.freqs is not None and np.isfinite(r.pnr_db)]
     if not use:
         return {"peak_hz": float("nan"), "pnr_db": float("nan"), "agree": False,
-                "n_links": 0, "n_agree": 0, "agreeing": [], "over_agreeing": [],
-                "over_hz": float("nan"), "over_db": float("nan"),
-                "under_hz": float("nan"), "under_db": float("nan")}
+                "n_links": 0, "n_agree": 0, "agreeing": []}
     grid = np.arange(cfg.f_low, cfg.f_high, 1.0 / (cfg.window_s * 4))
     acc = np.zeros_like(grid)
     for r in use:
         p = np.interp(grid, r.freqs, r.power)
         acc += p / np.median(p)
     acc /= len(use)
-    z = band_peaks(grid, acc, cfg)
-    pk, res = z["peak_hz"], 1.0 / cfg.window_s
-    agreeing = [i for i, r in enumerate(use) if abs(r.peak_hz - pk) <= res]
-    over_agree = [i for i, r in enumerate(use)
-                  if np.isfinite(r.over_hz) and abs(r.over_hz - z["over_hz"]) <= res]
+    pk, pnr = peak_pnr(grid, acc, cfg)
+    agreeing = [i for i, r in enumerate(use) if abs(r.peak_hz - pk) <= 1.0 / cfg.window_s]
     need = min(min_agree, len(use))
-    return {**z, "agree": len(agreeing) >= need,
+    return {"peak_hz": pk, "pnr_db": pnr, "agree": len(agreeing) >= need,
             "n_links": len(use), "n_agree": len(agreeing), "agreeing": agreeing,
-            "over_agreeing": over_agree, "grid": grid, "power": acc}
+            "grid": grid, "power": acc}
 
 
 class CombinedDecision:
     """Tiered decision on the combined spectrum, with the same 3-window stability rule.
 
-    Only a peak inside the PERSON band [person_lo, person_hi] can be a person.
-    CONFIRMED : person-band peak >= combined margin, stable, and >= 2 links peak at the same frequency
-    DETECTED  : same, but only 1 link sees it (normal when the other beams' paths miss the source)
-    MOTION    : no person-band peak, but a periodic peak ABOVE the band clears the margin
-                (reported, never counted as a person, LEDs stay off)
-    none      : nothing above margin in or above the band. Peaks BELOW the band (slow drift)
-                are only mentioned, never counted.
+    CONFIRMED : combined PNR >= combined margin, stable, and >= 2 links peak at the same frequency
+    DETECTED  : combined PNR >= combined margin and stable, but only 1 link sees it
+                (normal when the other beams' paths miss the source)
+    none      : below margin or not stable
     """
 
     def __init__(self, cfg: DSPConfig):
@@ -661,17 +607,11 @@ class CombinedDecision:
         self.peaks.append(c["peak_hz"])
         stable = (len(self.peaks) == self.cfg.n_stable
                   and np.ptp(np.array(self.peaks)) <= 1.0 / self.cfg.window_s)
-        m = self.cfg.combined_margin_db
-        above = np.isfinite(c["pnr_db"]) and c["pnr_db"] >= m
-        over = np.isfinite(c["over_db"]) and c["over_db"] >= m and len(c["over_agreeing"]) >= 1
-        if c.get("harmonic_of_under"):                   # in-band peak is an echo of slow drift
-            above = False
-        if above and stable and c["n_agree"] >= 1:       # PERSON band only; no backing link = not a detection
+        above = np.isfinite(c["pnr_db"]) and c["pnr_db"] >= self.cfg.combined_margin_db
+        if above and stable and c["n_agree"] >= 1:       # no link backing the peak = not a detection
             c["tier"] = "CONFIRMED" if c["n_agree"] >= 2 else "DETECTED"
-        elif over:                                       # periodic motion faster than breathing: report, not a person
-            c["tier"] = "MOTION"
         else:
-            c["tier"] = "none"                           # anything under the band never counts
+            c["tier"] = "none"
         c["stable"] = stable
         return c
 
@@ -694,12 +634,6 @@ class MolesResult:
     note: str = ""                   # progress text while warming up
     block: int | None = None         # block mode: 1, 2, 3 ... (block k covers t = 30(k-1) .. 30k s)
     window_s: float = 30.0
-    over_hz: float = float("nan")    # combined peak above the person band
-    over_db: float = float("nan")
-    under_hz: float = float("nan")   # combined peak below the person band (drift, ignored)
-    under_db: float = float("nan")
-    over_agreeing: list = field(default_factory=list)
-    margin_db: float = 12.0
 
     @property
     def t_end_s(self) -> float:
@@ -719,21 +653,10 @@ class MolesResult:
                 if self.block is not None else f"t={self.t_end:6.1f}s")
         if self.tier == "warming":
             return f"{head}  NO RESULT  {self.note}"
+        ag = " ".join(LINK_NAMES.get(i, str(i)) for i in self.agreeing) or "-"
         al = ",".join(MOLE_NAMES[m] for m in (1, 2, 3) if self.alert_mask >> (m - 1) & 1) or "off"
-        if self.tier == "MOTION":
-            ag = " ".join(LINK_NAMES.get(i, str(i)) for i in self.over_agreeing) or "-"
-            out = (f"{head}  MOTION     over-band peak {self.over_hz:5.3f} Hz ({60 * self.over_hz:5.1f}/min)  "
-                   f"PNR {self.over_db:5.1f} dB  links [{ag}]  -> faster than breathing, NOT counted as a person")
-        else:
-            ag = " ".join(LINK_NAMES.get(i, str(i)) for i in self.agreeing) or "-"
-            person = "PERSON  " if self.tier in ("CONFIRMED", "DETECTED") else ""
-            out = (f"{head}  {self.tier:9s}  {person}peak {self.peak_hz:5.3f} Hz ({self.per_min:5.1f}/min)  "
-                   f"PNR {self.pnr_db:5.1f} dB  agree {len(self.agreeing)}/{self.n_links} [{ag}]  alert {al}")
-            if np.isfinite(self.over_db) and self.over_db >= self.margin_db:
-                out += f"  | also over-band {self.over_hz:.3f} Hz {self.over_db:.1f} dB (not a person)"
-        if np.isfinite(self.under_db) and self.under_db >= self.margin_db:
-            out += f"  | under-band {self.under_hz:.3f} Hz {self.under_db:.1f} dB (drift, ignored)"
-        return out
+        return (f"{head}  {self.tier:9s}  peak {self.peak_hz:5.3f} Hz ({self.per_min:5.1f}/min)  "
+                f"PNR {self.pnr_db:5.1f} dB  agree {len(self.agreeing)}/{self.n_links} [{ag}]  alert {al}")
 
     def to_json(self, wall_time: float | None = None, run_id: str | None = None) -> dict:
         """Row(s) for the backend's window_results table: one combined + one per link."""
@@ -748,17 +671,12 @@ class MolesResult:
                 "amp_p2p": f(r.amp_p2p), "amp_units": r.amp_units, "tap": r.tap, "mode": r.mode,
                 "valid_frac": f(r.valid_frac), "filled_frac": f(r.filled_frac), "outliers": r.outliers,
                 "estimator": r.estimator, "stable": r.stable, "flags": r.flags,
-                "over_hz": f(r.over_hz), "over_db": f(r.over_db),
-                "under_hz": f(r.under_hz), "under_db": f(r.under_db),
                 "excluded": self.excluded.get(lid)}
         return _plain({"run_id": run_id, "wall_time": wall_time, "t_end": self.t_end, "cycle_end": self.cycle_end,
                 "block": self.block, "t_start": self.t_start_s if self.block is not None else None,
                 "tier": self.tier, "peak_hz": f(self.peak_hz), "pnr_db": f(self.pnr_db),
                 "agreeing_links": [LINK_NAMES.get(i, str(i)) for i in self.agreeing],
                 "n_links": self.n_links, "alert_mask": self.alert_mask, "links": links,
-                "person": self.tier in ("CONFIRMED", "DETECTED"),
-                "over_hz": f(self.over_hz), "over_db": f(self.over_db),
-                "under_hz": f(self.under_hz), "under_db": f(self.under_db),
                 "pipeline_version": PIPELINE_VERSION})
 
 
@@ -789,13 +707,8 @@ class MolesDSP:
       Links whose window is invalid (too many missing samples) are left out of combining.
     """
 
-    JUMP_CYCLES = 50          # beacon counter moving > 5 s away from the current timebase = a jump
-    CONFIRM_PKTS = 6          # packets that must agree on the new timebase before we restart on it
-
     def __init__(self, cfg: DSPConfig | None = None):
         self.cfg = cfg or DSPConfig()
-        self.restarts = []    # (old cycle, new cycle) for every timebase restart, kept across resets
-        self.dropped_stale = 0
         self.reset()
 
     def reset(self):
@@ -806,8 +719,6 @@ class MolesDSP:
         self.t_now = None
         self._last_eval = None
         self._blocks_done = 0
-        self._cand = None     # (unwrapped cycle, count) of a possible new timebase
-        self.last_seq = None
 
     def progress(self) -> tuple[int, float]:
         """Block mode: (block number being collected, seconds collected in it so far)."""
@@ -816,46 +727,20 @@ class MolesDSP:
         k = int((self.t_now + 1.0 / self.cfg.fs) // self.cfg.window_s)
         return k + 1, (self.t_now + 1.0 / self.cfg.fs) - k * self.cfg.window_s
 
-    @staticmethod
-    def _near(ref: int, seq: int) -> int:
-        """Unwrap a 16-bit cycle to the value nearest `ref` (handles the 65535 -> 0 wrap)."""
-        u = ref - (ref % 65536) + seq
-        if u - ref > 32768:
-            u -= 65536
-        elif ref - u > 32768:
-            u += 65536
-        return u
+    def _time(self, seq: int) -> float:
+        """Shared 16-bit cycle counter -> seconds on one clock for every link.
 
-    def _time(self, seq: int) -> float | None:
-        """Shared 16-bit beacon cycle -> seconds on one clock for every link.
-
-        If the counter jumps (the host ESP32 restarted, e.g. when the serial port opened,
-        so its cycle count went back to 0), samples would land at negative or far-future
-        times and no block would ever fill. A jump must be confirmed by CONFIRM_PKTS
-        packets before the DSP restarts on the new timebase; lone stale packets from the
-        old one are dropped. Returns None for a dropped packet.
+        Picks the unwrapped value nearest the latest one seen, so a 16-bit wrap and
+        packets from neighbouring cycles arriving slightly out of order both work.
         """
-        self.last_seq = seq
         if self._u_last is None:
             u = seq
         else:
-            u = self._near(self._u_last, seq)
-            if abs(u - self._u_last) > self.JUMP_CYCLES:
-                if self._cand is not None and abs(self._near(self._cand[0], seq) - self._cand[0]) <= self.JUMP_CYCLES:
-                    cu = self._near(self._cand[0], seq)
-                    self._cand = (max(cu, self._cand[0]), self._cand[1] + 1)
-                else:
-                    self._cand = (seq, 1)
-                if self._cand[1] < self.CONFIRM_PKTS:
-                    self.dropped_stale += 1
-                    return None
-                old = self._u_last % 65536
-                self.reset()                      # new timebase confirmed: start over at block 1
-                self.restarts.append((old, seq))
-                self.last_seq = seq
-                u = seq
-            else:
-                self._cand = None
+            u = self._u_last - (self._u_last % 65536) + seq
+            if u - self._u_last > 32768:
+                u -= 65536
+            elif self._u_last - u > 32768:
+                u += 65536
         self._u_last = u if self._u_last is None else max(self._u_last, u)
         if self._seq0 is None:
             self._seq0 = u
@@ -863,8 +748,6 @@ class MolesDSP:
 
     def push(self, pkt: Packet) -> None:
         t = self._time(pkt.seq)
-        if t is None:
-            return
         lp = self.links.get(pkt.link_id)
         if lp is None:
             lp = self.links[pkt.link_id] = LinkPipeline(self.cfg)
@@ -916,8 +799,7 @@ class MolesDSP:
             return MolesResult(t_end, cycle_end, "warming", float("nan"), float("nan"), 0, [], 0,
                                per, excluded, note=note, block=block, window_s=cfg.window_s)
         c = self.decision.update(use)
-        agreeing = [use_ids[i] for i in c["agreeing"]] if c["tier"] in ("CONFIRMED", "DETECTED") else []
-        over_agreeing = [use_ids[i] for i in c["over_agreeing"]]
+        agreeing = [use_ids[i] for i in c["agreeing"]] if c["tier"] != "none" else []
         mask = 0
         for lid in agreeing:
             for m in LINK_MOLES.get(lid, ()):
@@ -928,9 +810,7 @@ class MolesDSP:
         note = f"stability {min(len(self.decision.peaks), cfg.n_stable)}/{cfg.n_stable}"
         return MolesResult(t_end, cycle_end, tier, c["peak_hz"], c["pnr_db"], len(use), agreeing, mask,
                            per, excluded, c.get("grid"), c.get("power"), note=note,
-                           block=block, window_s=cfg.window_s, over_hz=c["over_hz"], over_db=c["over_db"],
-                           under_hz=c["under_hz"], under_db=c["under_db"], over_agreeing=over_agreeing,
-                           margin_db=cfg.combined_margin_db)
+                           block=block, window_s=cfg.window_s)
 
 
 def simulate_moles(seconds=90.0, amps=(2.0, 1.0, 0.0), f_hz=0.33, loss=0.02, seed=0, seq_start=0,
